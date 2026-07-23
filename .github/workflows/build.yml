@@ -175,7 +175,19 @@ jobs:
           grep -n "ifdef CONFIG_TASKS_RCU\|ifndef CONFIG_TASKS_RCU\|struct rcu_tasks {" kernel/rcu/tasks.h
           echo "=== update.c include of tasks.h ==="
           grep -n "tasks.h\|CONFIG_TASKS_RCU" kernel/rcu/update.c
-                  
+
+      - name: Debug RCU tasks.h full context
+        working-directory: kernel
+        run: |
+          echo "=== full tasks.h (400-500) ==="
+          sed -n '395,500p' kernel/rcu/tasks.h
+          echo "=== Kconfig TASKS_RCU definition ==="
+          grep -n -A5 "config TASKS_RCU" kernel/rcu/Kconfig
+          echo "=== who selects TASKS_RCU ==="
+          grep -rn "select TASKS_RCU" --include="Kconfig*" .
+          echo "=== CONFIG_PREEMPT in .config ==="
+          grep -E "CONFIG_PREEMPT=|CONFIG_PREEMPT_NONE|CONFIG_PREEMPT_VOLUNTARY|CONFIG_PREEMPTION" out/.config
+
       - name: Build kernel
         working-directory: kernel
         run: |
