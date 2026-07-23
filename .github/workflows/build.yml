@@ -1,0 +1,71 @@
+name: Build Clover Kernel
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout kernel source
+        uses: actions/checkout@v4
+        with:
+          repository: AlcatrazDev-Android-Devices/kernel_xiaomi_clover
+          ref: lineage-23.1
+          path: kernel
+
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison flex libssl-dev libncurses-dev \
+            build-essential git curl wget python3 cpio rsync
+
+      - name: Get toolchain
+        run: |
+          mkdir -p toolchain
+          # сюда clang prebuilt под ветку кернела — уточни какой юзает clover
+          # AOSP clang r***, либо gcc-arm64 из Linaro/kernel-build-tools
+
+      - name: Integrate ReSukiSU
+        working-directory: kernel
+        run: |
+          curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s main
+
+      - name: Apply susfs backport patch
+        working-directory: kernel
+        run: |
+          curl -LSs -o susfs.patch "https://raw.githubusercontent.com/JackA1ltman/NonGKI_Kernel_Build_2nd/mainline/Patches/Patch/susfs_patch_to_4.19.patch"
+          git apply susfs.patch
+
+      - name: Set defconfig options
+        working-directory: kernel
+        run: |
+          DEFCONFIG=arch/arm64/configs/clover_defconfig
+          echo "CONFIG_KSU=y" >> $DEFCONFIG
+          echo "CONFIG_KSU_SUSFS=y" >> $DEFCONFIG
+          echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> $DEFCONFIG
+          echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> $DEFCONFIG
+          echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y" >> $DEFCONFIG
+          echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y" >> $DEFCONFIG
+          echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> $DEFCONFIG
+          echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y" >> $DEFCONFIG
+
+      - name: Build kernel
+        working-directory: kernel
+        run: |
+          export PATH=$GITHUB_WORKSPACE/toolchain/bin:$PATH
+          export ARCH=arm64
+          make O=out clover_defconfig
+          make -j$(nproc) O=out CC=clang
+
+      - name: Package AnyKernel3
+        run: |
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3 ak3
+          cp kernel/out/arch/arm64/boot/Image.gz-dtb ak3/ || cp kernel/out/arch/arm64/boot/Image ak3/
+          cd ak3
+          zip -r9 ../clover-kernel.zip . -x .git README.md
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: clover-kernel
+          path: clover-kernel.zip
