@@ -35,7 +35,7 @@ jobs:
         run: |
           curl -LSs -o susfs.patch "https://raw.githubusercontent.com/JackA1ltman/NonGKI_Kernel_Build_2nd/mainline/Patches/Patch/susfs_patch_to_4.19.patch"
           patch -p1 --fuzz=3 < susfs.patch || true
-          
+
       - name: Fix rejected susfs hunks
         working-directory: kernel
         shell: python
@@ -120,7 +120,7 @@ jobs:
                       print("fs/proc/task_mmu.c patched manually")
                   else:
                       print("Warning: anchor not found in fs/proc/task_mmu.c")
-              
+
       - name: Set defconfig options
         working-directory: kernel
         run: |
@@ -146,21 +146,6 @@ jobs:
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
           make O=out clover_defconfig ARCH=arm64 SUBARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
-      - name: Force valid config values
-        working-directory: kernel
-        shell: python
-        run: |
-          import os
-          for p in ["out/.config", "arch/arm64/configs/clover_defconfig"]:
-              if os.path.exists(p):
-                  s = open(p).read()
-                  s = "\n".join([line for line in s.splitlines() if "CONFIG_LITTLE_CPU_MASK" not in line and "CONFIG_BIG_CPU_MASK" not in line and "CONFIG_TASKS_RCU" not in line])
-                  s += "\nCONFIG_LITTLE_CPU_MASK=15\n"
-                  s += "CONFIG_BIG_CPU_MASK=240\n"
-                  s += "CONFIG_TASKS_RCU=y\n"
-                  open(p, "w").write(s)
-                  print(f"Patched {p}")
-
       - name: Build kernel
         working-directory: kernel
         run: |
@@ -172,7 +157,7 @@ jobs:
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
           make O=out olddefconfig ARCH=arm64 SUBARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-          
+
           make -j$(nproc) O=out ARCH=arm64 SUBARCH=arm64 \
             CC=clang \
             CROSS_COMPILE=aarch64-linux-gnu- \
