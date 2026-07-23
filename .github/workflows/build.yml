@@ -125,8 +125,9 @@ jobs:
         working-directory: kernel
         run: |
           DEFCONFIG=arch/arm64/configs/clover_defconfig
+          sed -i 's/CONFIG_PREEMPT_NONE=y/# CONFIG_PREEMPT_NONE is not set/' $DEFCONFIG
+          echo "CONFIG_PREEMPT=y" >> $DEFCONFIG
           echo "CONFIG_COMPAT=y" >> $DEFCONFIG
-          echo "CONFIG_TASKS_RCU=y" >> $DEFCONFIG
           echo "CONFIG_KSU=y" >> $DEFCONFIG
           echo "CONFIG_KSU_SUSFS=y" >> $DEFCONFIG
           echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> $DEFCONFIG
