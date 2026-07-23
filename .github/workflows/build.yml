@@ -162,6 +162,18 @@ jobs:
                   s += "CONFIG_BIG_CPU_MASK=240\n"
                   open(p, "w").write(s)
                   print(f"Fixed CPU masks in {p}")
+
+      - name: Debug RCU config and source
+        working-directory: kernel
+        run: |
+          echo "=== CONFIG_TASKS_RCU related ==="
+          grep -E "CONFIG_TASKS_RCU|CONFIG_PREEMPT_RCU|CONFIG_TREE_RCU|CONFIG_TASKS_RCU_GENERIC" out/.config || echo "not set"
+          echo "=== tasks.h top 40 lines ==="
+          sed -n '1,40p' kernel/rcu/tasks.h
+          echo "=== tasks.h around struct rcu_tasks def ==="
+          grep -n "ifdef CONFIG_TASKS_RCU\|ifndef CONFIG_TASKS_RCU\|struct rcu_tasks {" kernel/rcu/tasks.h
+          echo "=== update.c include of tasks.h ==="
+          grep -n "tasks.h\|CONFIG_TASKS_RCU" kernel/rcu/update.c
                   
       - name: Build kernel
         working-directory: kernel
