@@ -128,6 +128,7 @@ EOF
           export PATH=$GITHUB_WORKSPACE/toolchain/bin:$PATH
           export ARCH=arm64
           make O=out clover_defconfig
+          make O=out olddefconfig
           make -j$(nproc) O=out CC=clang
 
       - name: Package AnyKernel3
