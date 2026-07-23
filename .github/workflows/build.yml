@@ -136,11 +136,12 @@ jobs:
               s = s.replace("#ifdef CONFIG_TASKS_RCU\nstruct rcu_tasks {", "#if defined(CONFIG_TASKS_RCU) || defined(CONFIG_TASKS_RCU_GENERIC)\nstruct rcu_tasks {")
               open(p, "w").write(s)
               print("Patched kernel/rcu/tasks.h")
-
+              
       - name: Set defconfig options
         working-directory: kernel
         run: |
           DEFCONFIG=arch/arm64/configs/clover_defconfig
+          echo "CONFIG_COMPAT=y" >> $DEFCONFIG
           echo "CONFIG_KSU=y" >> $DEFCONFIG
           echo "CONFIG_KSU_SUSFS=y" >> $DEFCONFIG
           echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> $DEFCONFIG
