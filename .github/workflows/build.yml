@@ -36,6 +36,81 @@ jobs:
         run: |
           curl -LSs -o susfs.patch "https://raw.githubusercontent.com/JackA1ltman/NonGKI_Kernel_Build_2nd/mainline/Patches/Patch/susfs_patch_to_4.19.patch"
           patch -p1 --fuzz=3 < susfs.patch || true
+          
+      - name: Fix rejected susfs hunks
+        working-directory: kernel
+        run: |
+          python3 - <<'EOF'   
+      import re
+      # fs/namespace.c — SUS_MOUNT bypass in vfs_kern_mount
+      p = "fs/namespace.c"
+      s = open(p).read()
+      anchor = "\tmnt = alloc_vfsmnt(name);\n\tif (!mnt)\n\t\treturn ERR_PTR(-ENOMEM);"
+      assert anchor in s, "anchor not found in namespace.c, patch manually"
+      replacement = (
+      "#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n"
+      "\tif (static_branch_unlikely(&susfs_is_sdcard_android_data_not_decrypted)) {\n"
+      "\t\tif (susfs_is_current_ksu_domain()) {\n"
+      "\t\t\tmnt = susfs_alloc_non_unshare_ksu_vfsmnt(name ?: \"none\");\n"
+      "\t\t\tgoto bypass_orig_flow;\n"
+      "\t\t}\n"
+      "\t}\n"
+      "#endif\n"
+      "\tmnt = alloc_vfsmnt(name);\n\n"
+      "#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n"
+      "bypass_orig_flow:\n"
+      "#endif\n"
+      "\tif (!mnt)\n\t\treturn ERR_PTR(-ENOMEM);"
+      )
+      s = s.replace(anchor, replacement, 1)
+      open(p, "w").write(s)
+      
+      # fs/proc/task_mmu.c — OPEN_REDIRECT/SUS_MAP/SUS_KSTAT in show_map_vma
+      p = "fs/proc/task_mmu.c"
+      s = open(p).read()
+      anchor = ("\tif (file) {\n"
+      "\t\tstruct inode *inode = file_inode(vma->vm_file);\n"
+      "\t\tdev = inode->i_sb->s_dev;\n"
+      "\t\tino = inode->i_ino;\n"
+      "\t\tpgoff = ((loff_t)vma->vm_pgoff) << PAGE_SHIFT;\n"
+      "\t}\n"
+      "\tstart = vma->vm_start;")
+      assert anchor in s, "anchor not found in task_mmu.c, patch manually"
+      replacement = (
+      "#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT\n"
+      "\tchar *spoofed_redirected_name = NULL;\n"
+      "#endif\n"
+      "\tif (file) {\n"
+      "\t\tstruct inode *inode = file_inode(vma->vm_file);\n"
+      "#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT\n"
+      "\t\tif (SUSFS_IS_INODE_OPEN_REDIRECT(inode)) {\n"
+      "\t\t\tif (!susfs_open_redirect_spoof_show_map_vma(inode, &ino, &dev, spoofed_redirected_name)) {\n"
+      "\t\t\t\tpgoff = ((loff_t)vma->vm_pgoff) << PAGE_SHIFT;\n"
+      "\t\t\t\tgoto orig_flow;\n"
+      "\t\t\t}\n"
+      "\t\t}\n"
+      "#endif\n"
+      "#ifdef CONFIG_KSU_SUSFS_SUS_MAP\n"
+      "\t\tif (SUSFS_IS_INODE_SUS_MAP(inode))\n"
+      "\t\t\treturn;\n"
+      "#endif\n"
+      "\t\tdev = inode->i_sb->s_dev;\n"
+      "\t\tino = inode->i_ino;\n"
+      "\t\tpgoff = ((loff_t)vma->vm_pgoff) << PAGE_SHIFT;\n"
+      "#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\n"
+      "\t\tsusfs_sus_kstat_spoof_show_map_vma(inode, &dev, &ino);\n"
+      "#endif\n"
+      "\t}\n"
+      "#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT\n"
+      "orig_flow:\n"
+      "#endif\n"
+      "\tstart = vma->vm_start;"
+      )
+      s = s.replace(anchor, replacement, 1)
+      open(p, "w").write(s)
+      
+      print("both hunks applied manually")
+      EOF
 
       - name: Show rejects
         working-directory: kernel
