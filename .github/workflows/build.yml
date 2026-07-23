@@ -42,15 +42,6 @@ jobs:
         run: |
           import os
 
-          p = "arch/arm64/configs/clover_defconfig"
-          if os.path.exists(p):
-              s = open(p).read()
-              s = s.replace("CONFIG_LITTLE_CPU_MASK=0xf", "CONFIG_LITTLE_CPU_MASK=15")
-              s = s.replace("CONFIG_LITTLE_CPU_MASK=0x0f", "CONFIG_LITTLE_CPU_MASK=15")
-              s = s.replace("CONFIG_BIG_CPU_MASK=0xf0", "CONFIG_BIG_CPU_MASK=240")
-              open(p, "w").write(s)
-              print("clover_defconfig cpu masks patched")
-
           p = "fs/namespace.c"
           if os.path.exists(p):
               s = open(p).read()
@@ -152,6 +143,34 @@ jobs:
           echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> $DEFCONFIG
           echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y" >> $DEFCONFIG
 
+      - name: Generate defconfig
+        working-directory: kernel
+        run: |
+          export PATH=$GITHUB_WORKSPACE/toolchain/bin:$PATH
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CC=clang
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+          make O=out clover_defconfig ARCH=arm64 SUBARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+
+      - name: Force valid CPU masks in config
+        working-directory: kernel
+        shell: python
+        run: |
+          import os, re
+          for p in ["out/.config", "arch/arm64/configs/clover_defconfig"]:
+              if os.path.exists(p):
+                  s = open(p).read()
+                  s = re.sub(r"CONFIG_LITTLE_CPU_MASK\s*=\s*.*", "CONFIG_LITTLE_CPU_MASK=15", s)
+                  s = re.sub(r"CONFIG_BIG_CPU_MASK\s*=\s*.*", "CONFIG_BIG_CPU_MASK=240", s)
+                  if "CONFIG_LITTLE_CPU_MASK" not in s:
+                      s += "\nCONFIG_LITTLE_CPU_MASK=15\n"
+                  if "CONFIG_BIG_CPU_MASK" not in s:
+                      s += "\nCONFIG_BIG_CPU_MASK=240\n"
+                  open(p, "w").write(s)
+                  print(f"Patched {p}")
+
       - name: Build kernel
         working-directory: kernel
         run: |
@@ -162,7 +181,6 @@ jobs:
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
-          make O=out clover_defconfig ARCH=arm64 SUBARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-
           make O=out olddefconfig ARCH=arm64 SUBARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-
           
           make -j$(nproc) O=out ARCH=arm64 SUBARCH=arm64 \
