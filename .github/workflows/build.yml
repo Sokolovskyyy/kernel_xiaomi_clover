@@ -18,7 +18,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y bc bison flex libssl-dev libncurses-dev libelf-dev \
-            build-essential git curl wget python3 cpio rsync
+            build-essential git curl wget python3 cpio rsync \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
 
       - name: Get toolchain
         run: |
@@ -143,8 +144,8 @@ jobs:
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
-          make O=out clover_defconfig
-          make O=out olddefconfig
+          make O=out clover_defconfig CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+          make O=out olddefconfig CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-
           make -j$(nproc) O=out \
             CC=clang \
             CROSS_COMPILE=aarch64-linux-gnu- \
