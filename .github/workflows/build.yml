@@ -146,6 +146,23 @@ jobs:
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
           make O=out clover_defconfig ARCH=arm64 SUBARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
+      - name: Fix invalid CPU mask values
+        working-directory: kernel
+        shell: python
+        run: |
+          import os
+          for p in ["out/.config", "arch/arm64/configs/clover_defconfig"]:
+              if os.path.exists(p):
+                  s = open(p).read()
+                  lines = [l for l in s.splitlines()
+                           if "CONFIG_LITTLE_CPU_MASK" not in l
+                           and "CONFIG_BIG_CPU_MASK" not in l]
+                  s = "\n".join(lines)
+                  s += "\nCONFIG_LITTLE_CPU_MASK=15\n"
+                  s += "CONFIG_BIG_CPU_MASK=240\n"
+                  open(p, "w").write(s)
+                  print(f"Fixed CPU masks in {p}")
+                  
       - name: Build kernel
         working-directory: kernel
         run: |
