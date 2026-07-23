@@ -36,7 +36,7 @@ jobs:
           curl -LSs -o susfs.patch "https://raw.githubusercontent.com/JackA1ltman/NonGKI_Kernel_Build_2nd/mainline/Patches/Patch/susfs_patch_to_4.19.patch"
           patch -p1 --fuzz=3 < susfs.patch || true
 
-      - name: Fix rejected susfs hunks
+      - name: Fix rejected susfs hunks and compat errors
         working-directory: kernel
         shell: python
         run: |
@@ -120,6 +120,15 @@ jobs:
                       print("fs/proc/task_mmu.c patched manually")
                   else:
                       print("Warning: anchor not found in fs/proc/task_mmu.c")
+
+          p = "include/linux/filter.h"
+          if os.path.exists(p):
+              s = open(p).read()
+              for name in ["struct sock_fprog_compat {", "struct compat_sock_fprog {"]:
+                  if name in s and "#include <linux/compat.h>" not in s:
+                      s = s.replace(name, "#include <linux/compat.h>\n" + name)
+                      print(f"Patched {name} in filter.h")
+              open(p, "w").write(s)
 
       - name: Set defconfig options
         working-directory: kernel
