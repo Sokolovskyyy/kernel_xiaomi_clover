@@ -120,12 +120,13 @@ jobs:
                       print("fs/proc/task_mmu.c patched manually")
                   else:
                       print("Warning: anchor not found in fs/proc/task_mmu.c")
-
+                      
       - name: Set defconfig options
         working-directory: kernel
         run: |
           DEFCONFIG=arch/arm64/configs/clover_defconfig
           echo "CONFIG_COMPAT=y" >> $DEFCONFIG
+          echo "CONFIG_TASKS_RCU=y" >> $DEFCONFIG
           echo "CONFIG_KSU=y" >> $DEFCONFIG
           echo "CONFIG_KSU_SUSFS=y" >> $DEFCONFIG
           echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> $DEFCONFIG
