@@ -42,6 +42,15 @@ jobs:
         run: |
           import os
 
+          p = "arch/arm64/configs/clover_defconfig"
+          if os.path.exists(p):
+              s = open(p).read()
+              s = s.replace("CONFIG_LITTLE_CPU_MASK=0xf", "CONFIG_LITTLE_CPU_MASK=15")
+              s = s.replace("CONFIG_LITTLE_CPU_MASK=0x0f", "CONFIG_LITTLE_CPU_MASK=15")
+              s = s.replace("CONFIG_BIG_CPU_MASK=0xf0", "CONFIG_BIG_CPU_MASK=240")
+              open(p, "w").write(s)
+              print("clover_defconfig cpu masks patched")
+
           p = "fs/namespace.c"
           if os.path.exists(p):
               s = open(p).read()
@@ -152,10 +161,6 @@ jobs:
           export CC=clang
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-
-          DEFCONFIG=arch/arm64/configs/clover_defconfig
-          echo "CONFIG_LITTLE_CPU_MASK=15" >> $DEFCONFIG
-          echo "CONFIG_BIG_CPU_MASK=240" >> $DEFCONFIG
 
           make O=out clover_defconfig ARCH=arm64 SUBARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-
           make O=out olddefconfig ARCH=arm64 SUBARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-
