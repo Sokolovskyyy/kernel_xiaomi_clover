@@ -35,7 +35,15 @@ jobs:
         working-directory: kernel
         run: |
           curl -LSs -o susfs.patch "https://raw.githubusercontent.com/JackA1ltman/NonGKI_Kernel_Build_2nd/mainline/Patches/Patch/susfs_patch_to_4.19.patch"
-          patch -p1 --fuzz=3 < susfs.patch
+          patch -p1 --fuzz=3 < susfs.patch || true
+
+      - name: Show rejects
+        working-directory: kernel
+        run: |
+          echo "=== fs/namespace.c.rej ==="
+          cat fs/namespace.c.rej || true
+          echo "=== fs/proc/task_mmu.c.rej ==="
+          cat fs/proc/task_mmu.c.rej || true
 
       - name: Set defconfig options
         working-directory: kernel
