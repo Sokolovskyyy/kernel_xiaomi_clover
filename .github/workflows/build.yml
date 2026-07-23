@@ -30,12 +30,12 @@ jobs:
         working-directory: kernel
         run: |
           curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s main
-
+          
       - name: Apply susfs backport patch
         working-directory: kernel
         run: |
           curl -LSs -o susfs.patch "https://raw.githubusercontent.com/JackA1ltman/NonGKI_Kernel_Build_2nd/mainline/Patches/Patch/susfs_patch_to_4.19.patch"
-          git apply susfs.patch
+          patch -p1 --fuzz=3 < susfs.patch
 
       - name: Set defconfig options
         working-directory: kernel
