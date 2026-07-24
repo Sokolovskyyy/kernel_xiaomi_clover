@@ -17,11 +17,11 @@ jobs:
       - name: List available defconfigs
         working-directory: kernel
         run: |
-          echo "=== arch/arm64/configs contents ==="
-          ls -la arch/arm64/configs/ | grep -i clover
-          echo "=== all defconfigs matching clover (any case) ==="
-          find . -iname "*clover*defconfig*"
-          echo "=== full listing if nothing matched ==="
+          echo "=== arch/arm64/configs contents (matching clover) ==="
+          ls -la arch/arm64/configs/ | grep -i clover || echo "no match"
+          echo "=== all defconfigs matching clover (any case, anywhere in repo) ==="
+          find . -iname "*clover*defconfig*" || echo "no match"
+          echo "=== full listing of arch/arm64/configs ==="
           ls arch/arm64/configs/
 
       - name: Install deps
