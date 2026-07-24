@@ -4,7 +4,13 @@ on:
   workflow_dispatch:
 
 jobs:
+  get-manager:
+    uses: ./.github/workflows/get-manager.yml
+    with:
+      kernelsu_variant: "ReSukiSU"
+
   build:
+    needs: get-manager
     runs-on: ubuntu-22.04
 
     env:
@@ -196,17 +202,4 @@ jobs:
             kernel/out/arch/arm64/boot/Image.gz
             kernel/out/arch/arm64/boot/Image.gz-dtb
 
-      - name: Package AnyKernel3
-        run: |
-          git clone --depth=1 https://github.com/osm0sis/AnyKernel3 ak3
-          rm -rf ak3/.git ak3/.github
-          cp anykernel/anykernel.sh ak3/
-          cp kernel/out/arch/arm64/boot/Image.gz-dtb ak3/ || cp kernel/out/arch/arm64/boot/Image ak3/
-          cd ak3
-          zip -r9 ../clover-kernel.zip . -x "*.md" "LICENSE" "*.gitattributes"
 
-      - name: Upload kernel artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: clover-kernel
-          path: clover-kernel.zip

@@ -1,0 +1,221 @@
+name: GetManager
+
+permissions:
+  contents: write
+  actions: read
+
+on:
+  workflow_call:
+    inputs:
+      kernelsu_variant:
+        required: true
+        type: string
+    outputs:
+      susVer:
+        description: "The fetched SUSFS version number"
+        value: ${{ jobs.get_ksu_manager.outputs.susVer }}
+      ksuVer:
+        description: "The calculated KSU version number"
+        value: ${{ jobs.get_ksu_manager.outputs.ksuVer }}
+
+jobs:
+  get_ksu_manager:
+    runs-on: ubuntu-latest
+    outputs:
+      ksuVer: ${{ steps.get_version.outputs.kversion }}
+      susVer: ${{ steps.get_version.outputs.sversion }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Debug Workflow Caller Context
+        run: |
+          echo "=== DEBUG CONTEXT ==="
+          echo "EVENT NAME: ${{ github.event_name }}"
+          echo "Caller Repository: ${{ github.caller_repository }}"
+          echo "Caller Workflow: ${{ github.caller_workflow }}"
+          echo "Caller User: ${{ github.triggering_actor }}"
+          echo "Git Ref: ${{ github.ref }}"
+          echo "====================="
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git curl jq
+
+      - name: Get KSU & SUSFS version
+        id: get_version
+        run: |
+          if [ "${{ inputs.kernelsu_variant }}" == "ReSukiSU" ]; then
+            echo "ReSukiSU variant"
+            git clone https://github.com/ReSukiSU/ReSukiSU.git KernelSU
+          else
+            echo "Unknown variant: ${{ inputs.kernelsu_variant }}"
+            exit 1
+          fi
+
+          cd KernelSU
+          KSU_GIT_VERSION=$(git rev-list --count HEAD)
+          KSU_VERSION=$((30700 + KSU_GIT_VERSION))
+          echo "KSU_VERSION=$KSU_VERSION"
+          echo "KSU_VERSION=$KSU_VERSION" >> $GITHUB_ENV
+
+          INFO="https://gitlab.com/simonpunk/susfs4ksu/-/raw/gki-android14-6.1/ksu_module_susfs/module.prop?ref_type=heads"
+          SUS_VERSION=$(curl -s $INFO | awk -F '=' '$1 == "version" { print $2 }')
+          echo "SUS_VERSION=$SUS_VERSION"
+
+          echo "kversion=$KSU_VERSION" >> $GITHUB_OUTPUT
+          echo "sversion=$SUS_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Fetch ReSukiSU Manager
+        id: add_KSU
+        continue-on-error: true
+        run: |
+          REPO="ReSukiSU/ReSukiSU"
+          KSUM="manager"
+          FILENAME="build-manager.yml"
+
+          TARGET_KSU_VERSION="${KSU_VERSION:-}"
+          if ! [[ "$TARGET_KSU_VERSION" =~ ^[0-9]+$ ]]; then
+            echo "Invalid KSU version: $TARGET_KSU_VERSION"
+            exit 1
+          fi
+
+          calculate_run_ksu_version() {
+            local head_sha="$1"
+            if ! git -C KernelSU cat-file -e "$head_sha^{commit}" 2>/dev/null; then
+              git -C KernelSU fetch --no-tags origin "$head_sha" >/dev/null 2>&1 || true
+            fi
+            if ! git -C KernelSU cat-file -e "$head_sha^{commit}" 2>/dev/null; then
+              return 1
+            fi
+            local git_version
+            git_version=$(git -C KernelSU rev-list --count "$head_sha")
+            echo $((30700 + git_version))
+          }
+
+          get_manager_artifacts() {
+            local artifacts="$1"
+            printf '%s' "$artifacts" | jq -r \
+              '.artifacts[] | select(.name == "Manager-release" or .name == "Spoofed-Manager-release") | "\(.name)\t\(.archive_download_url)"'
+          }
+
+          DOWNLOAD_LIST=""
+          BEST_VERSION=0
+          BEST_BUILD_ID=""
+          BEST_BRANCH=""
+          RUNS_URL="https://api.github.com/repos/$REPO/actions/workflows/$FILENAME/runs?status=success&per_page=30"
+
+          echo "Looking for Manager with KSU <= $TARGET_KSU_VERSION..."
+          for PAGE in $(seq 1 10); do
+            echo "--- Checking page $PAGE ---"
+            RUNS=$(curl -s -H "Authorization: token $GH_TOKEN" "$RUNS_URL&page=$PAGE")
+            RUN_COUNT=$(printf '%s' "$RUNS" | jq '.workflow_runs | length')
+            if [ "$RUN_COUNT" -eq 0 ]; then
+              break
+            fi
+            for INDEX in $(seq 0 $((RUN_COUNT - 1))); do
+              BUILD_ID=$(printf '%s' "$RUNS" | jq -r ".workflow_runs[$INDEX].id")
+              HEAD_SHA=$(printf '%s' "$RUNS" | jq -r ".workflow_runs[$INDEX].head_sha")
+              HEAD_BRANCH=$(printf '%s' "$RUNS" | jq -r ".workflow_runs[$INDEX].head_branch")
+              RUN_KSU_VERSION=$(calculate_run_ksu_version "$HEAD_SHA" || true)
+              if ! [[ "$RUN_KSU_VERSION" =~ ^[0-9]+$ ]]; then
+                echo "Skip build $BUILD_ID: cannot calculate KSU version from $HEAD_SHA"
+                continue
+              fi
+              if [ "$RUN_KSU_VERSION" -gt "$TARGET_KSU_VERSION" ]; then
+                echo "Skip build $BUILD_ID ($HEAD_BRANCH): Manager KSU $RUN_KSU_VERSION > kernel KSU $TARGET_KSU_VERSION"
+                continue
+              fi
+              ARTIFACTS=$(curl -s -H "Authorization: token $GH_TOKEN" \
+                "https://api.github.com/repos/$REPO/actions/runs/$BUILD_ID/artifacts")
+              CANDIDATE_LIST=$(get_manager_artifacts "$ARTIFACTS")
+              if [ -z "$CANDIDATE_LIST" ]; then
+                echo "Skip build $BUILD_ID ($HEAD_BRANCH): no Manager artifacts found"
+                continue
+              fi
+              if [ -z "$DOWNLOAD_LIST" ] || [ "$RUN_KSU_VERSION" -gt "$BEST_VERSION" ]; then
+                DOWNLOAD_LIST="$CANDIDATE_LIST"
+                BEST_VERSION="$RUN_KSU_VERSION"
+                BEST_BUILD_ID="$BUILD_ID"
+                BEST_BRANCH="$HEAD_BRANCH"
+                echo "Candidate Manager: build $BUILD_ID ($HEAD_BRANCH), KSU $RUN_KSU_VERSION"
+              fi
+              if [ "$RUN_KSU_VERSION" -eq "$TARGET_KSU_VERSION" ]; then
+                break 2
+              fi
+            done
+          done
+
+          if [ -z "$DOWNLOAD_LIST" ]; then
+            echo "No Manager found with KSU <= $TARGET_KSU_VERSION"
+            exit 1
+          fi
+
+          echo "Selected Manager build $BEST_BUILD_ID ($BEST_BRANCH), KSU $BEST_VERSION"
+
+          echo "$DOWNLOAD_LIST" | while IFS=$'\t' read -r NAME URL; do
+            SAFE_NAME=$(echo "$NAME" | tr '/ ' '__')
+            ZIP_NAME="${{ inputs.kernelsu_variant }}-${SAFE_NAME}(${{ env.KSU_VERSION }}).zip"
+            echo "Downloading $NAME -> $ZIP_NAME"
+            curl -L -H "Authorization: token $GH_TOKEN" -o "$ZIP_NAME" "$URL"
+            mkdir -p "manager-artifacts/$SAFE_NAME"
+            unzip -o "$ZIP_NAME" -d "manager-artifacts/$SAFE_NAME"
+            rm -rf "$ZIP_NAME"
+          done
+
+          # Keep only arm64-v8a release APKs, drop debug
+          echo "Keeping only arm64-v8a release APKs..."
+          find manager-artifacts -type f -name "*.apk" ! -name "*-arm64-v8a-release.apk" -delete
+          find manager-artifacts -type f -name "*debug*.apk" -delete
+          if ! find manager-artifacts -type f -name "*-arm64-v8a-release.apk" | grep -q .; then
+            echo "No arm64-v8a release Manager APK found"
+            exit 1
+          fi
+          find manager-artifacts -type f -name "*.apk" -print
+
+      - name: Add SUSFS module
+        id: add_SUSFS
+        continue-on-error: true
+        run: |
+          BUILD_ID=$(curl -s -H "Authorization: token $GH_TOKEN" \
+          "https://api.github.com/repos/sidex15/susfs4ksu-module/actions/workflows/build.yml/runs?status=success" |
+          jq -r '.workflow_runs[0].id')
+          ARTIFACTS=$(curl -s -H "Authorization: token $GH_TOKEN" \
+          "https://api.github.com/repos/sidex15/susfs4ksu-module/actions/runs/$BUILD_ID/artifacts")
+          DOWNLOAD_URL=$(echo "$ARTIFACTS" | jq -r '.artifacts[0].archive_download_url')
+          NAME=$(echo "$ARTIFACTS" | jq -r '.artifacts[0].name')
+          echo "SUSFS_NAME=$NAME" >> $GITHUB_ENV
+          NAME="susfs-$NAME.zip"
+          echo "$DOWNLOAD_URL"
+          echo "$NAME"
+
+          curl -L -H "Authorization: token $GH_TOKEN" -o "$NAME" "$DOWNLOAD_URL"
+          mkdir -p susfs-module
+          unzip "$NAME" -d susfs-temp
+          cd susfs-temp
+          if ls *.zip 1>/dev/null 2>&1; then
+            mv *.zip ../susfs-module/
+          else
+            zip -r "../susfs-module/ksu_module_susfs.zip" .
+          fi
+          cd ..
+          rm -rf susfs-temp "$NAME"
+
+      - name: Notify on failure
+        if: steps.add_KSU.outcome == 'failure'
+        run: echo "Failed to download KSU Manager!"
+
+      - name: Upload Manager APKs
+        if: steps.add_KSU.outcome == 'success'
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ inputs.kernelsu_variant }}-Manager(${{ env.KSU_VERSION }})
+          path: |
+            manager-artifacts/**/*.apk
+
+      - name: Upload SUSFS module
+        if: steps.add_SUSFS.outcome == 'success'
+        uses: actions/upload-artifact@v6
+        with:
+          name: susfs-${{ env.SUSFS_NAME }}
+          path: ./susfs-module/*
