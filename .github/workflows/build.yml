@@ -58,6 +58,17 @@ jobs:
         run: |
           curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s main
 
+      - name: Fix ReSukiSU Kconfig for 4.19 (remove THREAD_INFO_IN_TASK dependency)
+        working-directory: kernel
+        run: |
+          # ReSukiSU Kconfig has "depends on THREAD_INFO_IN_TASK && 64BIT" for KSU_SUSFS
+          # THREAD_INFO_IN_TASK doesn't exist in 4.19 — removes SUSFS from menu entirely
+          # Fix: remove this dependency so KSU_SUSFS becomes visible
+          sed -i 's/depends on THREAD_INFO_IN_TASK && 64BIT/depends on 64BIT/' drivers/kernelsu/Kconfig
+          echo "Patched KSU_SUSFS depends: removed THREAD_INFO_IN_TASK"
+          # Verify the fix
+          grep -A1 "config KSU_SUSFS" drivers/kernelsu/Kconfig | head -5
+
       - name: Remove pre-patched AlcatrazDev KSU hooks (use ReSukiSU kprobes instead)
         working-directory: kernel
         shell: python
@@ -200,8 +211,11 @@ jobs:
           printf "%s\n" \
             "CONFIG_COMPAT=y" \
             "CONFIG_PREEMPT=y" \
-            "CONFIG_KPROBES=y" \
-            "CONFIG_KSU=y" > /tmp/ksu_susfs.config
+            "CONFIG_KSU=y" \
+            "CONFIG_KSU_MANUAL_HOOK=y" \
+            "CONFIG_KSU_MANUAL_HOOK_AUTO_SETUID_HOOK=y" \
+            "CONFIG_KSU_MANUAL_HOOK_AUTO_INITRC_HOOK=y" \
+            "CONFIG_KSU_MANUAL_HOOK_AUTO_INPUT_HOOK=y" > /tmp/ksu_susfs.config
 
           # Add SUSFS options only if enabled
           if [ "${{ inputs.enable_susfs }}" = "true" ]; then
