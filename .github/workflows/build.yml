@@ -153,6 +153,7 @@ jobs:
           printf "%s\n" \
             "CONFIG_COMPAT=y" \
             "CONFIG_PREEMPT=y" \
+            "CONFIG_KPROBES=y" \
             "CONFIG_KSU=y" \
             "CONFIG_KSU_SUSFS=y" \
             "CONFIG_KSU_SUSFS_SUS_PATH=y" \
