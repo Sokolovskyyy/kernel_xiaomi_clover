@@ -1,9 +1,5 @@
 name: GetManager
 
-permissions:
-  contents: write
-  actions: read
-
 on:
   workflow_call:
     inputs:

@@ -3,6 +3,10 @@ name: Build Clover Kernel
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+  actions: read
+
 jobs:
   get-manager:
     uses: ./.github/workflows/get-manager.yml
