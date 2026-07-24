@@ -148,6 +148,16 @@ jobs:
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
           make O=out clover_defconfig ARCH=arm64 SUBARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
+      - name: List available defconfigs
+        working-directory: kernel
+        run: |
+          echo "=== arch/arm64/configs contents ==="
+          ls -la arch/arm64/configs/ | grep -i clover
+          echo "=== all defconfigs matching clover (any case) ==="
+          find . -iname "*clover*defconfig*"
+          echo "=== full listing if nothing matched ==="
+          ls arch/arm64/configs/
+          
       - name: Fix invalid CPU mask values
         working-directory: kernel
         shell: python
