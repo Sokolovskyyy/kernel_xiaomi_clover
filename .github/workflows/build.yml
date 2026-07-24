@@ -27,6 +27,10 @@ jobs:
           ls -la arch/arm64/configs/vendor/
           echo "=== vendor entries matching clover ==="
           ls -la arch/arm64/configs/vendor/ | grep -i clover || echo "no match"
+          echo "=== vendor/xiaomi contents ==="
+          ls -la arch/arm64/configs/vendor/xiaomi/
+          echo "=== xiaomi entries matching clover ==="
+          ls -la arch/arm64/configs/vendor/xiaomi/ | grep -i clover || echo "no match"
 
       - name: Install deps
         run: |
