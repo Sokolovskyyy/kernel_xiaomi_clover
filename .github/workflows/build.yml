@@ -23,6 +23,10 @@ jobs:
           find . -iname "*clover*defconfig*" || echo "no match"
           echo "=== full listing of arch/arm64/configs ==="
           ls arch/arm64/configs/
+          echo "=== arch/arm64/configs/vendor contents ==="
+          ls -la arch/arm64/configs/vendor/
+          echo "=== vendor entries matching clover ==="
+          ls -la arch/arm64/configs/vendor/ | grep -i clover || echo "no match"
 
       - name: Install deps
         run: |
