@@ -52,6 +52,44 @@ jobs:
         run: |
           curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s main
 
+      - name: Remove pre-patched AlcatrazDev KSU hooks (use ReSukiSU kprobes instead)
+        working-directory: kernel
+        shell: python
+        run: |
+          import re
+
+          files_and_patterns = {
+              "fs/read_write.c": [
+                  (r'#ifdef CONFIG_KSU\nextern bool ksu_vfs_read_hook.*?#endif\n', ''),
+                  (r'#ifdef CONFIG_KSU\n\tif \(unlikely\(ksu_vfs_read_hook\)\)\n\t\tksu_handle_sys_read\(fd, &buf, &count\);\n#endif\n', ''),
+              ],
+              "fs/exec.c": [
+                  (r'#ifdef CONFIG_KSU\nextern bool ksu_execveat_hook.*?#endif\n', ''),
+                  (r'#ifdef CONFIG_KSU\n\tif \(unlikely\(ksu_execveat_hook\)\)\n\t\tksu_handle_execveat\(\(int \*\)AT_FDCWD, &filename, &argv, &envp, 0\);\n\telse\n\t\tksu_handle_execveat_sucompat\(\(int \*\)AT_FDCWD, &filename, NULL, NULL, NULL\);\n#endif\n', ''),
+                  (r'#ifdef CONFIG_KSU\n\tif \(!ksu_execveat_hook\)\n\t\tksu_handle_execveat_sucompat\(\(int \*\)AT_FDCWD, &filename, NULL, NULL, NULL\);\n#endif\n', ''),
+              ],
+              "drivers/input/input.c": [
+                  (r'#ifdef CONFIG_KSU\nextern bool ksu_input_hook.*?#endif\n', ''),
+                  (r'#ifdef CONFIG_KSU\n\tif \(unlikely\(ksu_input_hook\)\)\n\t\tksu_handle_input_handle_event\(&type, &code, &value\);\n#endif\n', ''),
+              ],
+          }
+
+          for fpath, replacements in files_and_patterns.items():
+              try:
+                  with open(fpath, "r", encoding="utf-8", errors="surrogateescape") as f:
+                      s = f.read()
+                  original = s
+                  for pattern, replacement in replacements:
+                      s = re.sub(pattern, replacement, s, flags=re.DOTALL)
+                  if s != original:
+                      with open(fpath, "w", encoding="utf-8", errors="surrogateescape") as f:
+                          f.write(s)
+                      print(f"Removed AlcatrazDev KSU hooks from {fpath}")
+                  else:
+                      print(f"No changes needed in {fpath}")
+              except FileNotFoundError:
+                  print(f"File not found: {fpath}")
+
       - name: Apply susfs backport patch
         working-directory: kernel
         run: |
