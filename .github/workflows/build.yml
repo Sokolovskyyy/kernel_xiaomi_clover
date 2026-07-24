@@ -6,14 +6,6 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
-
-    env:
-      ARCH: arm64
-      SUBARCH: arm64
-      CC: clang
-      CROSS_COMPILE: aarch64-linux-gnu-
-      CROSS_COMPILE_ARM32: arm-linux-gnueabi-
-
     steps:
       - name: Checkout kernel source
         uses: actions/checkout@v4
@@ -22,20 +14,16 @@ jobs:
           ref: lineage-23.1
           path: kernel
 
-      - name: Install dependencies
+      - name: Install deps
         run: |
           sudo apt-get update
           sudo apt-get install -y bc bison flex libssl-dev libncurses-dev libelf-dev \
-            build-essential git curl wget python3 python-is-python3 cpio rsync \
-            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi libtinfo5 zip unzip
+            build-essential git curl wget python3 cpio rsync \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
 
       - name: Get toolchain
         run: |
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain
-
-      - name: Add toolchain to GITHUB_PATH
-        run: |
-          echo "${{ github.workspace }}/toolchain/bin" >> $GITHUB_PATH
 
       - name: Integrate ReSukiSU
         working-directory: kernel
@@ -56,8 +44,7 @@ jobs:
 
           p = "fs/namespace.c"
           if os.path.exists(p):
-              with open(p, "r", encoding="utf-8", errors="surrogateescape") as f:
-                  s = f.read()
+              s = open(p).read()
               if "CONFIG_KSU_SUSFS_SUS_MOUNT" in s:
                   print("fs/namespace.c already patched")
               else:
@@ -78,16 +65,14 @@ jobs:
                           "#endif\n"
                           "\tif (!mnt)\n\t\treturn ERR_PTR(-ENOMEM);"
                       )
-                      with open(p, "w", encoding="utf-8", errors="surrogateescape") as f:
-                          f.write(s.replace(anchor, replacement, 1))
+                      open(p, "w").write(s.replace(anchor, replacement, 1))
                       print("fs/namespace.c patched manually")
                   else:
                       print("Warning: anchor not found in fs/namespace.c")
 
           p = "fs/proc/task_mmu.c"
           if os.path.exists(p):
-              with open(p, "r", encoding="utf-8", errors="surrogateescape") as f:
-                  s = f.read()
+              s = open(p).read()
               if "CONFIG_KSU_SUSFS_OPEN_REDIRECT" in s:
                   print("fs/proc/task_mmu.c already patched")
               else:
@@ -131,8 +116,7 @@ jobs:
                           "#endif\n"
                           "\tstart = vma->vm_start;"
                       )
-                      with open(p, "w", encoding="utf-8", errors="surrogateescape") as f:
-                          f.write(s.replace(anchor, replacement, 1))
+                      open(p, "w").write(s.replace(anchor, replacement, 1))
                       print("fs/proc/task_mmu.c patched manually")
                   else:
                       print("Warning: anchor not found in fs/proc/task_mmu.c")
@@ -140,23 +124,33 @@ jobs:
       - name: Generate defconfig (sdm660 base + clover fragment + KSU/susfs)
         working-directory: kernel
         run: |
-          printf "%s\n" \
-            "CONFIG_COMPAT=y" \
-            "CONFIG_PREEMPT=y" \
-            "CONFIG_KSU=y" \
-            "CONFIG_KSU_SUSFS=y" \
-            "CONFIG_KSU_SUSFS_SUS_PATH=y" \
-            "CONFIG_KSU_SUSFS_SUS_MOUNT=y" \
-            "CONFIG_KSU_SUSFS_SUS_KSTAT=y" \
-            "CONFIG_KSU_SUSFS_TRY_UMOUNT=y" \
-            "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" \
-            "CONFIG_KSU_SUSFS_ENABLE_LOG=y" > /tmp/ksu_susfs.config
+          export PATH=$GITHUB_WORKSPACE/toolchain/bin:$PATH
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CC=clang
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+
+          cat > /tmp/ksu_susfs.config << 'EOF'
+CONFIG_COMPAT=y
+CONFIG_PREEMPT=y
+CONFIG_KSU=y
+CONFIG_KSU_SUSFS=y
+CONFIG_KSU_SUSFS_SUS_PATH=y
+CONFIG_KSU_SUSFS_SUS_MOUNT=y
+CONFIG_KSU_SUSFS_SUS_KSTAT=y
+CONFIG_KSU_SUSFS_TRY_UMOUNT=y
+CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+CONFIG_KSU_SUSFS_ENABLE_LOG=y
+EOF
 
           cat arch/arm64/configs/vendor/xiaomi/sdm660_defconfig \
               arch/arm64/configs/vendor/xiaomi/clover.config \
               /tmp/ksu_susfs.config \
               > /tmp/combined_defconfig
-              
+
+          make O=out ARCH=arm64 SUBARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- KCONFIG_ALLCONFIG=/tmp/combined_defconfig alldefconfig
+
       - name: Fix invalid CPU mask values
         working-directory: kernel
         shell: python
@@ -164,27 +158,32 @@ jobs:
           import os
           for p in ["out/.config", "/tmp/combined_defconfig"]:
               if os.path.exists(p):
-                  with open(p, "r", encoding="utf-8", errors="surrogateescape") as f:
-                      s = f.read()
+                  s = open(p).read()
                   lines = [l for l in s.splitlines()
                            if "CONFIG_LITTLE_CPU_MASK" not in l
                            and "CONFIG_BIG_CPU_MASK" not in l]
                   s = "\n".join(lines)
                   s += "\nCONFIG_LITTLE_CPU_MASK=15\n"
                   s += "CONFIG_BIG_CPU_MASK=240\n"
-                  with open(p, "w", encoding="utf-8", errors="surrogateescape") as f:
-                      f.write(s)
+                  open(p, "w").write(s)
                   print(f"Fixed CPU masks in {p}")
 
       - name: Build kernel
         working-directory: kernel
         run: |
-          make O=out olddefconfig ARCH=$ARCH SUBARCH=$SUBARCH CC=$CC CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32
+          export PATH=$GITHUB_WORKSPACE/toolchain/bin:$PATH
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CC=clang
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
-          make -j$(nproc) O=out ARCH=$ARCH SUBARCH=$SUBARCH \
-            CC=$CC \
-            CROSS_COMPILE=$CROSS_COMPILE \
-            CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32
+          make O=out olddefconfig ARCH=arm64 SUBARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+
+          make -j$(nproc) O=out ARCH=arm64 SUBARCH=arm64 \
+            CC=clang \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
       - name: Package AnyKernel3
         run: |
@@ -193,8 +192,7 @@ jobs:
           cd ak3
           zip -r9 ../clover-kernel.zip . -x .git README.md
 
-      - name: Upload kernel artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: clover-kernel
           path: clover-kernel.zip
