@@ -188,6 +188,14 @@ jobs:
             CROSS_COMPILE=$CROSS_COMPILE \
             CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32
 
+      - name: Upload raw kernel images
+        uses: actions/upload-artifact@v4
+        with:
+          name: raw-kernel-images
+          path: |
+            kernel/out/arch/arm64/boot/Image.gz
+            kernel/out/arch/arm64/boot/Image.gz-dtb
+            
       - name: Package AnyKernel3
         run: |
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3 ak3
