@@ -14,24 +14,6 @@ jobs:
           ref: lineage-23.1
           path: kernel
 
-      - name: List available defconfigs
-        working-directory: kernel
-        run: |
-          echo "=== arch/arm64/configs contents (matching clover) ==="
-          ls -la arch/arm64/configs/ | grep -i clover || echo "no match"
-          echo "=== all defconfigs matching clover (any case, anywhere in repo) ==="
-          find . -iname "*clover*defconfig*" || echo "no match"
-          echo "=== full listing of arch/arm64/configs ==="
-          ls arch/arm64/configs/
-          echo "=== arch/arm64/configs/vendor contents ==="
-          ls -la arch/arm64/configs/vendor/
-          echo "=== vendor entries matching clover ==="
-          ls -la arch/arm64/configs/vendor/ | grep -i clover || echo "no match"
-          echo "=== vendor/xiaomi contents ==="
-          ls -la arch/arm64/configs/vendor/xiaomi/
-          echo "=== xiaomi entries matching clover ==="
-          ls -la arch/arm64/configs/vendor/xiaomi/ | grep -i clover || echo "no match"
-
       - name: Install deps
         run: |
           sudo apt-get update
@@ -139,23 +121,7 @@ jobs:
                   else:
                       print("Warning: anchor not found in fs/proc/task_mmu.c")
 
-      - name: Set defconfig options
-        working-directory: kernel
-        run: |
-          DEFCONFIG=arch/arm64/configs/clover_defconfig
-          sed -i 's/CONFIG_PREEMPT_NONE=y/# CONFIG_PREEMPT_NONE is not set/' $DEFCONFIG
-          echo "CONFIG_PREEMPT=y" >> $DEFCONFIG
-          echo "CONFIG_COMPAT=y" >> $DEFCONFIG
-          echo "CONFIG_KSU=y" >> $DEFCONFIG
-          echo "CONFIG_KSU_SUSFS=y" >> $DEFCONFIG
-          echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> $DEFCONFIG
-          echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> $DEFCONFIG
-          echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y" >> $DEFCONFIG
-          echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y" >> $DEFCONFIG
-          echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> $DEFCONFIG
-          echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y" >> $DEFCONFIG
-
-      - name: Generate defconfig
+      - name: Generate defconfig (sdm660 base + clover fragment + KSU/susfs)
         working-directory: kernel
         run: |
           export PATH=$GITHUB_WORKSPACE/toolchain/bin:$PATH
@@ -164,14 +130,33 @@ jobs:
           export CC=clang
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-          make O=out clover_defconfig ARCH=arm64 SUBARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+
+          cat > /tmp/ksu_susfs.config << 'EOF'
+CONFIG_COMPAT=y
+CONFIG_PREEMPT=y
+CONFIG_KSU=y
+CONFIG_KSU_SUSFS=y
+CONFIG_KSU_SUSFS_SUS_PATH=y
+CONFIG_KSU_SUSFS_SUS_MOUNT=y
+CONFIG_KSU_SUSFS_SUS_KSTAT=y
+CONFIG_KSU_SUSFS_TRY_UMOUNT=y
+CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+CONFIG_KSU_SUSFS_ENABLE_LOG=y
+EOF
+
+          cat arch/arm64/configs/vendor/xiaomi/sdm660_defconfig \
+              arch/arm64/configs/vendor/xiaomi/clover.config \
+              /tmp/ksu_susfs.config \
+              > /tmp/combined_defconfig
+
+          make O=out ARCH=arm64 SUBARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- KCONFIG_ALLCONFIG=/tmp/combined_defconfig alldefconfig
 
       - name: Fix invalid CPU mask values
         working-directory: kernel
         shell: python
         run: |
           import os
-          for p in ["out/.config", "arch/arm64/configs/clover_defconfig"]:
+          for p in ["out/.config", "/tmp/combined_defconfig"]:
               if os.path.exists(p):
                   s = open(p).read()
                   lines = [l for l in s.splitlines()
