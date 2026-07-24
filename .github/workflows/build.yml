@@ -2,6 +2,12 @@ name: Build Clover Kernel
 
 on:
   workflow_dispatch:
+    inputs:
+      enable_susfs:
+        description: 'Enable SUSFS backport (disable for first test builds)'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -91,12 +97,14 @@ jobs:
                   print(f"File not found: {fpath}")
 
       - name: Apply susfs backport patch
+        if: inputs.enable_susfs == true
         working-directory: kernel
         run: |
           curl -LSs -o susfs.patch "https://raw.githubusercontent.com/JackA1ltman/NonGKI_Kernel_Build_2nd/mainline/Patches/Patch/susfs_patch_to_4.19.patch"
           patch -p1 --fuzz=3 < susfs.patch || true
 
       - name: Fix rejected susfs hunks
+        if: inputs.enable_susfs == true
         working-directory: kernel
         shell: python
         run: |
@@ -185,21 +193,31 @@ jobs:
                   else:
                       print("Warning: anchor not found in fs/proc/task_mmu.c")
 
-      - name: Generate defconfig (sdm660 base + clover fragment + KSU/susfs)
+      - name: Generate defconfig
         working-directory: kernel
         run: |
+          # Base config
           printf "%s\n" \
             "CONFIG_COMPAT=y" \
             "CONFIG_PREEMPT=y" \
             "CONFIG_KPROBES=y" \
-            "CONFIG_KSU=y" \
-            "CONFIG_KSU_SUSFS=y" \
-            "CONFIG_KSU_SUSFS_SUS_PATH=y" \
-            "CONFIG_KSU_SUSFS_SUS_MOUNT=y" \
-            "CONFIG_KSU_SUSFS_SUS_KSTAT=y" \
-            "CONFIG_KSU_SUSFS_TRY_UMOUNT=y" \
-            "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" \
-            "CONFIG_KSU_SUSFS_ENABLE_LOG=y" > /tmp/ksu_susfs.config
+            "CONFIG_KSU=y" > /tmp/ksu_susfs.config
+
+          # Add SUSFS options only if enabled
+          if [ "${{ inputs.enable_susfs }}" = "true" ]; then
+            printf "%s\n" \
+              "CONFIG_KSU_SUSFS=y" \
+              "CONFIG_KSU_SUSFS_SUS_PATH=y" \
+              "CONFIG_KSU_SUSFS_SUS_MOUNT=y" \
+              "CONFIG_KSU_SUSFS_SUS_KSTAT=y" \
+              "CONFIG_KSU_SUSFS_TRY_UMOUNT=y" \
+              "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" \
+              "CONFIG_KSU_SUSFS_ENABLE_LOG=y" >> /tmp/ksu_susfs.config
+            echo "SUSFS options enabled"
+          else
+            echo "# CONFIG_KSU_SUSFS is not set" >> /tmp/ksu_susfs.config
+            echo "SUSFS explicitly disabled (Kconfig default y overridden)"
+          fi
 
           cat arch/arm64/configs/vendor/xiaomi/sdm660_defconfig \
               arch/arm64/configs/vendor/xiaomi/clover.config \
@@ -244,5 +262,3 @@ jobs:
           path: |
             kernel/out/arch/arm64/boot/Image.gz
             kernel/out/arch/arm64/boot/Image.gz-dtb
-
-
