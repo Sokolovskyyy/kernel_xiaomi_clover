@@ -158,7 +158,7 @@ jobs:
               > /tmp/combined_defconfig
 
           make O=out ARCH=$ARCH SUBARCH=$SUBARCH CC=$CC CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 KCONFIG_ALLCONFIG=/tmp/combined_defconfig alldefconfig
-              
+
       - name: Fix invalid CPU mask values
         working-directory: kernel
         shell: python
@@ -195,13 +195,15 @@ jobs:
           path: |
             kernel/out/arch/arm64/boot/Image.gz
             kernel/out/arch/arm64/boot/Image.gz-dtb
-            
+
       - name: Package AnyKernel3
         run: |
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3 ak3
+          rm -rf ak3/.git ak3/.github
+          cp anykernel/anykernel.sh ak3/
           cp kernel/out/arch/arm64/boot/Image.gz-dtb ak3/ || cp kernel/out/arch/arm64/boot/Image ak3/
           cd ak3
-          zip -r9 ../clover-kernel.zip . -x .git README.md
+          zip -r9 ../clover-kernel.zip . -x "*.md" "LICENSE" "*.gitattributes"
 
       - name: Upload kernel artifact
         uses: actions/upload-artifact@v4
