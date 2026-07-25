@@ -32,8 +32,8 @@ jobs:
 
           cd KernelSU
           KSU_GIT_VERSION=$(git rev-list --count HEAD)
-          # KernelSU-Next version: major * 10000 + git version + 200 for historical reasons
-          KSU_VERSION=$((10000 + KSU_GIT_VERSION + 200))
+          # KernelSU-Next legacy branch version: 30000 + git version + 200
+          KSU_VERSION=$((30000 + KSU_GIT_VERSION + 200))
           echo "KSU_VERSION=$KSU_VERSION"
           echo "KSU_VERSION=$KSU_VERSION" >> $GITHUB_ENV
 
@@ -67,7 +67,7 @@ jobs:
             fi
             local git_version
             git_version=$(git -C KernelSU rev-list --count "$head_sha")
-            echo $((10000 + git_version + 200))
+            echo $((30000 + git_version + 200))
           }
 
           get_manager_artifacts() {

@@ -51,20 +51,19 @@ jobs:
         run: |
           echo "${{ github.workspace }}/toolchain/bin" >> $GITHUB_PATH
 
-      - name: Integrate KernelSU-Next
+      - name: Integrate KernelSU-Next (legacy driver for non-GKI)
         working-directory: kernel
         run: |
-          # Remove existing ReSukiSU drivers/kernelsu (real directory, not symlink)
           rm -rf drivers/kernelsu
-          # Run KernelSU-Next setup.sh (clones repo, creates symlink, adds Kconfig/Makefile entries)
-          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/dev/kernel/setup.sh" | bash -s
-          # Verify integration
+          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
           echo "=== drivers/kernelsu symlink ==="
           ls -la drivers/kernelsu
           echo "=== Kconfig entry ==="
           grep "kernelsu" drivers/Kconfig
           echo "=== Makefile entry ==="
           grep "kernelsu" drivers/Makefile
+          echo "=== drivers/kernelsu/Kconfig ==="
+          cat drivers/kernelsu/Kconfig
 
       - name: Add SUSFS menu to KernelSU-Next Kconfig
         working-directory: kernel
@@ -201,56 +200,19 @@ jobs:
           echo "=== Final drivers/kernelsu/Kconfig ==="
           cat "$KCONFIG"
 
-      - name: Remove AlcatrazDev KSU hooks (KernelSU-Next uses kprobes instead)
+      - name: Verify AlcatrazDev hooks (kept for legacy manual hook mode)
         working-directory: kernel
-        shell: python
         run: |
-          import re
-
-          files_and_patterns = {
-              "fs/read_write.c": [
-                  (r'#ifdef CONFIG_KSU\nextern bool ksu_vfs_read_hook.*?#endif\n', ''),
-                  (r'#ifdef CONFIG_KSU\n\tif \(unlikely\(ksu_vfs_read_hook\)\)\n\t\tksu_handle_sys_read\(fd, &buf, &count\);\n#endif\n', ''),
-              ],
-              "fs/exec.c": [
-                  (r'#ifdef CONFIG_KSU\nextern bool ksu_execveat_hook.*?#endif\n', ''),
-                  (r'#ifdef CONFIG_KSU\n\tif \(unlikely\(ksu_execveat_hook\)\)\n\t\tksu_handle_execveat\(\(int \*\)AT_FDCWD, &filename, &argv, &envp, 0\);\n\telse\n\t\tksu_handle_execveat_sucompat\(\(int \*\)AT_FDCWD, &filename, NULL, NULL, NULL\);\n#endif\n', ''),
-                  (r'#ifdef CONFIG_KSU\n\tif \(!ksu_execveat_hook\)\n\t\tksu_handle_execveat_sucompat\(\(int \*\)AT_FDCWD, &filename, NULL, NULL, NULL\);\n#endif\n', ''),
-              ],
-              "drivers/input/input.c": [
-                  (r'#ifdef CONFIG_KSU\nextern bool ksu_input_hook.*?#endif\n', ''),
-                  (r'#ifdef CONFIG_KSU\n\tif \(unlikely\(ksu_input_hook\)\)\n\t\tksu_handle_input_handle_event\(&type, &code, &value\);\n#endif\n', ''),
-              ],
-          }
-
-          any_removed = False
-          for fpath, replacements in files_and_patterns.items():
-              try:
-                  with open(fpath, "r", encoding="utf-8", errors="surrogateescape") as f:
-                      s = f.read()
-                  original = s
-                  for pattern, replacement in replacements:
-                      s = re.sub(pattern, replacement, s, flags=re.DOTALL)
-                  if s != original:
-                      with open(fpath, "w", encoding="utf-8", errors="surrogateescape") as f:
-                          f.write(s)
-                      print(f"Removed AlcatrazDev KSU hooks from {fpath}")
-                      any_removed = True
-                  else:
-                      print(f"No AlcatrazDev hooks found in {fpath} (already clean or different structure)")
-              except FileNotFoundError:
-                  print(f"File not found: {fpath}")
-
-          if not any_removed:
-              print("")
-              print("=" * 60)
-              print("WARNING: No AlcatrazDev hooks were found/removed!")
-              print("The hook patterns may have changed after KernelSU-Next integration.")
-              print("Please verify manually that no stale hooks remain in:")
-              print("  - fs/exec.c")
-              print("  - fs/read_write.c")
-              print("  - drivers/input/input.c")
-              print("=" * 60)
+          echo "=== AlcatrazDev hook locations (kept as-is for legacy driver) ==="
+          for f in fs/exec.c fs/read_write.c drivers/input/input.c; do
+            if [ -f "$f" ]; then
+              hits=$(grep -c 'CONFIG_KSU' "$f" 2>/dev/null || echo 0)
+              echo "$f: $hits CONFIG_KSU references"
+            fi
+          done
+          echo ""
+          echo "Legacy driver uses manual hooks (ksu_handle_sys_reboot, etc.)"
+          echo "AlcatrazDev hooks provide the userspace-facing syscalls"
 
       - name: Apply SUSFS backport patch
         working-directory: kernel
@@ -375,11 +337,14 @@ jobs:
       - name: Generate defconfig
         working-directory: kernel
         run: |
-          # KernelSU-Next base config (depends on KPROBES && EXT4_FS)
+          # KernelSU-Next legacy driver config (manual hook mode for non-GKI 4.19)
+          # Legacy driver does NOT depend on KPROBES/EXT4_FS
+          # KSU_MANUAL_HOOK defaults to y when KPROBES is disabled
           printf "%s\n" \
             "CONFIG_COMPAT=y" \
             "CONFIG_PREEMPT=y" \
-            "CONFIG_KSU=y" > /tmp/ksu_susfs.config
+            "CONFIG_KSU=y" \
+            "CONFIG_KSU_MANUAL_HOOK=y" > /tmp/ksu_susfs.config
 
           # Add custom local version if provided
           if [ -n "${{ inputs.local_version }}" ]; then
