@@ -661,7 +661,17 @@ jobs:
                               "\tksu_handle_stat(&dfd, &filename, &flag);\n"
                               "#endif"
                           )
-                          lines.insert(brace_line + 1, hook_block)
+                          # C90: insert AFTER declarations, not after '{'.
+                          # Find 'vfs_fstatat' (first executable) and insert before it.
+                          insert_idx = None
+                          for i in range(brace_line + 1, min(brace_line + 15, len(lines))):
+                              if 'vfs_fstatat' in lines[i] or ('error' in lines[i] and '=' in lines[i] and 'struct' not in lines[i]):
+                                  insert_idx = i
+                                  break
+                          if insert_idx is None:
+                              # Fallback: insert after opening brace
+                              insert_idx = brace_line + 1
+                          lines.insert(insert_idx, hook_block)
                           c = '\n'.join(lines)
 
                           # Insert extern before marker
