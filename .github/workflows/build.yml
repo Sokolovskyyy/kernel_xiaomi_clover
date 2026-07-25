@@ -202,8 +202,9 @@ jobs:
 
       - name: "Apply official KernelSU-Next manual hooks (5 files)"
         working-directory: kernel
-        shell: python3
+        shell: bash
         run: |
+          python3 << 'PYEOF'
           """
           Apply 5 official KernelSU-Next legacy manual hooks.
           Replaces old ReSukiSU/AlcatrazDev hooks that use undefined symbols.
@@ -655,6 +656,7 @@ jobs:
           else:
               print("\n  All 5 hooks applied successfully ✓")
           print("=" * 60)
+          PYEOF
 
       - name: Apply SUSFS backport patch
         working-directory: kernel
