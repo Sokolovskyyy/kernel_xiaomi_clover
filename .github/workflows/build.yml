@@ -921,6 +921,39 @@ jobs:
                                   print(f"    {marker} {j + 1}: {lines[j]}")
                               break
 
+          # --- fs/open.c: inject missing #include <linux/susfs_def.h> ---
+          # The SUSFS patch adds code using SUSFS_IS_INODE_OPEN_REDIRECT_WITHOUT_UID_CHECK
+          # but forgets to add the include for susfs_def.h where the macro is defined.
+          p = "fs/open.c"
+          if os.path.exists(p):
+              with open(p, "r", encoding="utf-8", errors="surrogateescape") as f:
+                  s = f.read()
+              needs_include = ("SUSFS_IS_INODE_OPEN_REDIRECT" in s or
+                               "SUSFS_IS_INODE_SUS_MAP" in s or
+                               "SUSFS_IS_INODE_SUS_KSTAT" in s)
+              has_include = "#include <linux/susfs_def.h>" in s or "#include <linux/susfs.h>" in s
+              if needs_include and not has_include:
+                  lines = s.split('\n')
+                  # Find last #include before first function definition
+                  last_include_idx = None
+                  for i, line in enumerate(lines):
+                      if line.startswith('#include <'):
+                          last_include_idx = i
+                      if line.startswith('long ') or line.startswith('int ') or line.startswith('void '):
+                          break
+                  if last_include_idx is not None:
+                      lines.insert(last_include_idx + 1, "#include <linux/susfs_def.h>")
+                      s = '\n'.join(lines)
+                      with open(p, "w", encoding="utf-8", errors="surrogateescape") as f:
+                          f.write(s)
+                      print(f"{p}: injected #include <linux/susfs_def.h> after line {last_include_idx + 1} ✓")
+                  else:
+                      print(f"WARNING: could not find include section in {p}")
+              elif has_include:
+                  print(f"{p}: susfs header already included ✓")
+              else:
+                  print(f"{p}: no SUSFS symbols found, skip include injection")
+
       - name: Generate defconfig
         working-directory: kernel
         run: |
