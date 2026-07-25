@@ -3,11 +3,11 @@ name: Build Clover Kernel
 on:
   workflow_dispatch:
     inputs:
-      enable_susfs:
-        description: 'Enable SUSFS backport (disable for first test builds)'
+      local_version:
+        description: 'Custom local version suffix (e.g. -ksunext-test1). Leave empty for default.'
         required: false
-        default: false
-        type: boolean
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -16,8 +16,6 @@ permissions:
 jobs:
   get-manager:
     uses: ./.github/workflows/get-manager.yml
-    with:
-      kernelsu_variant: "ReSukiSU"
 
   build:
     needs: get-manager
@@ -53,23 +51,156 @@ jobs:
         run: |
           echo "${{ github.workspace }}/toolchain/bin" >> $GITHUB_PATH
 
-      - name: Integrate ReSukiSU
+      - name: Integrate KernelSU-Next
         working-directory: kernel
         run: |
-          curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s main
+          # Remove existing ReSukiSU drivers/kernelsu (real directory, not symlink)
+          rm -rf drivers/kernelsu
+          # Run KernelSU-Next setup.sh (clones repo, creates symlink, adds Kconfig/Makefile entries)
+          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/dev/kernel/setup.sh" | bash -s
+          # Verify integration
+          echo "=== drivers/kernelsu symlink ==="
+          ls -la drivers/kernelsu
+          echo "=== Kconfig entry ==="
+          grep "kernelsu" drivers/Kconfig
+          echo "=== Makefile entry ==="
+          grep "kernelsu" drivers/Makefile
 
-      - name: Fix ReSukiSU Kconfig for 4.19 (remove THREAD_INFO_IN_TASK dependency)
+      - name: Add SUSFS menu to KernelSU-Next Kconfig
         working-directory: kernel
         run: |
-          # ReSukiSU Kconfig has "depends on THREAD_INFO_IN_TASK && 64BIT" for KSU_SUSFS
-          # THREAD_INFO_IN_TASK doesn't exist in 4.19 — removes SUSFS from menu entirely
-          # Fix: remove this dependency so KSU_SUSFS becomes visible
-          sed -i 's/depends on THREAD_INFO_IN_TASK && 64BIT/depends on 64BIT/' drivers/kernelsu/Kconfig
-          echo "Patched KSU_SUSFS depends: removed THREAD_INFO_IN_TASK"
-          # Verify the fix
-          grep -A1 "config KSU_SUSFS" drivers/kernelsu/Kconfig | head -5
+          KCONFIG="drivers/kernelsu/Kconfig"
 
-      - name: Remove pre-patched AlcatrazDev KSU hooks (use ReSukiSU kprobes instead)
+          if grep -q "config KSU_SUSFS" "$KCONFIG"; then
+            echo "SUSFS menu already present in Kconfig - skipping injection"
+          else
+            # Write SUSFS menu to temp file (avoids quoting issues)
+            cat > /tmp/susfs_menu.kconfig << 'SUSFS_EOF'
+          
+          menu "KernelSU - SUSFS"
+          
+          config KSU_SUSFS
+          	bool "KernelSU addon - SUSFS"
+          	depends on KSU
+          	depends on 64BIT
+          	default y
+          	help
+          	  Patch and Enable SUSFS to kernel with KernelSU.
+          
+          config KSU_SUSFS_SUS_PATH
+          	bool "Enable to hide suspicious path (NOT recommended)"
+          	depends on KSU_SUSFS
+          	default y
+          	help
+          	  Allow hiding the user-defined path and all its sub-paths from various system calls.
+          
+          config KSU_SUSFS_SUS_MOUNT
+          	bool "Enable to hide suspicious mounts"
+          	depends on KSU_SUSFS
+          	default y
+          	help
+          	  Allow hiding the user-defined mount paths from /proc/self/[mounts|mountinfo|mountstat].
+          
+          config KSU_SUSFS_SUS_KSTAT
+          	bool "Enable to spoof suspicious kstat"
+          	depends on KSU_SUSFS
+          	default y
+          	help
+          	  Allow spoofing the kstat of user-defined file/directory.
+          
+          config KSU_SUSFS_TRY_UMOUNT
+          	bool "Enable to use ksu's try_umount"
+          	depends on KSU_SUSFS
+          	default y
+          	help
+          	  Allow using try_umount to umount user-defined mount paths.
+          
+          config KSU_SUSFS_SPOOF_UNAME
+          	bool "Enable to spoof uname"
+          	depends on KSU_SUSFS
+          	default y
+          	help
+          	  Allow spoofing the string returned by uname syscall.
+          
+          config KSU_SUSFS_ENABLE_LOG
+          	bool "Enable logging susfs log to kernel"
+          	depends on KSU_SUSFS
+          	default y
+          	help
+          	  Allow logging susfs log to kernel.
+          
+          config KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
+          	bool "Enable to hide ksu and susfs symbols from /proc/kallsyms"
+          	depends on KSU_SUSFS
+          	default y
+          	help
+          	  Automatically hide ksu and susfs symbols from /proc/kallsyms.
+          
+          config KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+          	bool "Enable to spoof /proc/cmdline (non-gki)"
+          	depends on KSU_SUSFS
+          	default y
+          	help
+          	  Spoof the output of /proc/cmdline with a user-defined file.
+          
+          config KSU_SUSFS_OPEN_REDIRECT
+          	bool "Enable to redirect a path to be opened with another path (experimental)"
+          	depends on KSU_SUSFS
+          	default y
+          	help
+          	  Allow redirecting a target path to be opened with another user-defined path.
+          
+          config KSU_SUSFS_SUS_MAP
+          	bool "Enable to hide some mmapped real file from different proc maps interfaces"
+          	depends on KSU_SUSFS
+          	default y
+          	help
+          	  Allow hiding mmapped real file from /proc/<pid>/[maps|smaps|smaps_rollup|map_files|mem|pagemap]
+          
+          endmenu
+          SUSFS_EOF
+
+            # Insert SUSFS menu before the final endmenu
+            python3 -c "
+          kconfig_path = '$KCONFIG'
+          with open(kconfig_path, 'r') as f:
+              content = f.read()
+          susfs_menu = open('/tmp/susfs_menu.kconfig').read()
+          stripped = content.rstrip()
+          if stripped.endswith('endmenu'):
+              content = stripped[:-7] + susfs_menu + '\n'
+          else:
+              content += susfs_menu
+          with open(kconfig_path, 'w') as f:
+              f.write(content)
+          print('Added SUSFS menu to KernelSU-Next Kconfig')
+          "
+
+            # Fix THREAD_INFO_IN_TASK dependency (does not exist in 4.19)
+            python3 -c "
+          kconfig_path = '$KCONFIG'
+          with open(kconfig_path, 'r') as f:
+              content = f.read()
+          changed = False
+          if 'depends on THREAD_INFO_IN_TASK && 64BIT' in content:
+              content = content.replace('depends on THREAD_INFO_IN_TASK && 64BIT', 'depends on 64BIT')
+              changed = True
+          elif 'depends on THREAD_INFO_IN_TASK' in content:
+              content = content.replace('depends on THREAD_INFO_IN_TASK', 'depends on 64BIT')
+              changed = True
+          if changed:
+              with open(kconfig_path, 'w') as f:
+                  f.write(content)
+              print('Fixed THREAD_INFO_IN_TASK dependency -> 64BIT')
+          else:
+              print('No THREAD_INFO_IN_TASK dependency found (already correct)')
+          "
+          fi
+
+          echo "=== Final drivers/kernelsu/Kconfig ==="
+          cat "$KCONFIG"
+
+      - name: Remove AlcatrazDev KSU hooks (KernelSU-Next uses kprobes instead)
         working-directory: kernel
         shell: python
         run: |
@@ -91,6 +222,7 @@ jobs:
               ],
           }
 
+          any_removed = False
           for fpath, replacements in files_and_patterns.items():
               try:
                   with open(fpath, "r", encoding="utf-8", errors="surrogateescape") as f:
@@ -102,32 +234,44 @@ jobs:
                       with open(fpath, "w", encoding="utf-8", errors="surrogateescape") as f:
                           f.write(s)
                       print(f"Removed AlcatrazDev KSU hooks from {fpath}")
+                      any_removed = True
                   else:
-                      print(f"No changes needed in {fpath}")
+                      print(f"No AlcatrazDev hooks found in {fpath} (already clean or different structure)")
               except FileNotFoundError:
                   print(f"File not found: {fpath}")
 
-      - name: Apply susfs backport patch
-        if: inputs.enable_susfs == true
+          if not any_removed:
+              print("")
+              print("=" * 60)
+              print("WARNING: No AlcatrazDev hooks were found/removed!")
+              print("The hook patterns may have changed after KernelSU-Next integration.")
+              print("Please verify manually that no stale hooks remain in:")
+              print("  - fs/exec.c")
+              print("  - fs/read_write.c")
+              print("  - drivers/input/input.c")
+              print("=" * 60)
+
+      - name: Apply SUSFS backport patch
         working-directory: kernel
         run: |
           curl -LSs -o susfs.patch "https://raw.githubusercontent.com/JackA1ltman/NonGKI_Kernel_Build_2nd/mainline/Patches/Patch/susfs_patch_to_4.19.patch"
           patch -p1 --fuzz=3 < susfs.patch || true
 
-      - name: Fix rejected susfs hunks
-        if: inputs.enable_susfs == true
+      - name: Fix rejected SUSFS hunks manually
         working-directory: kernel
         shell: python
         run: |
           import os
 
+          # --- fs/namespace.c: SUS_MOUNT hook ---
           p = "fs/namespace.c"
           if os.path.exists(p):
               with open(p, "r", encoding="utf-8", errors="surrogateescape") as f:
                   s = f.read()
               if "CONFIG_KSU_SUSFS_SUS_MOUNT" in s:
-                  print("fs/namespace.c already patched")
+                  print(f"{p}: already patched (SUS_MOUNT present)")
               else:
+                  # Try the alloc_vfsmnt anchor
                   anchor = "\tmnt = alloc_vfsmnt(name);\n\tif (!mnt)\n\t\treturn ERR_PTR(-ENOMEM);"
                   if anchor in s:
                       replacement = (
@@ -147,16 +291,28 @@ jobs:
                       )
                       with open(p, "w", encoding="utf-8", errors="surrogateescape") as f:
                           f.write(s.replace(anchor, replacement, 1))
-                      print("fs/namespace.c patched manually")
+                      print(f"{p}: patched manually (SUS_MOUNT)")
                   else:
-                      print("Warning: anchor not found in fs/namespace.c")
+                      print(f"WARNING: alloc_vfsmnt anchor not found in {p}")
+                      print("  Searching for context around alloc_vfsmnt...")
+                      lines = s.split('\n')
+                      for i, line in enumerate(lines):
+                          if 'alloc_vfsmnt' in line:
+                              start = max(0, i - 3)
+                              end = min(len(lines), i + 6)
+                              print(f"  Context around line {i + 1}:")
+                              for j in range(start, end):
+                                  marker = ">>>" if j == i else "   "
+                                  print(f"    {marker} {j + 1}: {lines[j]}")
+                              break
 
+          # --- fs/proc/task_mmu.c: OPEN_REDIRECT + SUS_MAP + SUS_KSTAT hooks ---
           p = "fs/proc/task_mmu.c"
           if os.path.exists(p):
               with open(p, "r", encoding="utf-8", errors="surrogateescape") as f:
                   s = f.read()
               if "CONFIG_KSU_SUSFS_OPEN_REDIRECT" in s:
-                  print("fs/proc/task_mmu.c already patched")
+                  print(f"{p}: already patched (OPEN_REDIRECT present)")
               else:
                   anchor = (
                       "\tif (file) {\n"
@@ -200,38 +356,51 @@ jobs:
                       )
                       with open(p, "w", encoding="utf-8", errors="surrogateescape") as f:
                           f.write(s.replace(anchor, replacement, 1))
-                      print("fs/proc/task_mmu.c patched manually")
+                      print(f"{p}: patched manually (OPEN_REDIRECT + SUS_MAP + SUS_KSTAT)")
                   else:
-                      print("Warning: anchor not found in fs/proc/task_mmu.c")
+                      print(f"WARNING: file/inode anchor not found in {p}")
+                      print("  Searching for context around 'file_inode(vma->vm_file)'...")
+                      lines = s.split('\n')
+                      for i, line in enumerate(lines):
+                          if 'file_inode(vma->vm_file)' in line:
+                              start = max(0, i - 3)
+                              end = min(len(lines), i + 8)
+                              print(f"  Context around line {i + 1}:")
+                              for j in range(start, end):
+                                  marker = ">>>" if j == i else "   "
+                                  print(f"    {marker} {j + 1}: {lines[j]}")
+                              break
 
       - name: Generate defconfig
         working-directory: kernel
         run: |
-          # Base config
+          # KernelSU-Next base config (depends on KPROBES && EXT4_FS)
           printf "%s\n" \
             "CONFIG_COMPAT=y" \
             "CONFIG_PREEMPT=y" \
-            "CONFIG_KSU=y" \
-            "CONFIG_KSU_MANUAL_HOOK=y" \
-            "CONFIG_KSU_MANUAL_HOOK_AUTO_SETUID_HOOK=y" \
-            "CONFIG_KSU_MANUAL_HOOK_AUTO_INITRC_HOOK=y" \
-            "CONFIG_KSU_MANUAL_HOOK_AUTO_INPUT_HOOK=y" > /tmp/ksu_susfs.config
+            "CONFIG_KSU=y" > /tmp/ksu_susfs.config
 
-          # Add SUSFS options only if enabled
-          if [ "${{ inputs.enable_susfs }}" = "true" ]; then
-            printf "%s\n" \
-              "CONFIG_KSU_SUSFS=y" \
-              "CONFIG_KSU_SUSFS_SUS_PATH=y" \
-              "CONFIG_KSU_SUSFS_SUS_MOUNT=y" \
-              "CONFIG_KSU_SUSFS_SUS_KSTAT=y" \
-              "CONFIG_KSU_SUSFS_TRY_UMOUNT=y" \
-              "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" \
-              "CONFIG_KSU_SUSFS_ENABLE_LOG=y" >> /tmp/ksu_susfs.config
-            echo "SUSFS options enabled"
-          else
-            echo "# CONFIG_KSU_SUSFS is not set" >> /tmp/ksu_susfs.config
-            echo "SUSFS explicitly disabled (Kconfig default y overridden)"
+          # Add custom local version if provided
+          if [ -n "${{ inputs.local_version }}" ]; then
+            echo "CONFIG_LOCALVERSION=\"${{ inputs.local_version }}\"" >> /tmp/ksu_susfs.config
+            echo "# CONFIG_LOCALVERSION_AUTO is not set" >> /tmp/ksu_susfs.config
+            echo "Custom local version: ${{ inputs.local_version }}"
           fi
+
+          # SUSFS options (always enabled)
+          printf "%s\n" \
+            "CONFIG_KSU_SUSFS=y" \
+            "CONFIG_KSU_SUSFS_SUS_PATH=y" \
+            "CONFIG_KSU_SUSFS_SUS_MOUNT=y" \
+            "CONFIG_KSU_SUSFS_SUS_KSTAT=y" \
+            "CONFIG_KSU_SUSFS_TRY_UMOUNT=y" \
+            "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" \
+            "CONFIG_KSU_SUSFS_ENABLE_LOG=y" \
+            "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" \
+            "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" \
+            "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" \
+            "CONFIG_KSU_SUSFS_SUS_MAP=y" >> /tmp/ksu_susfs.config
+          echo "SUSFS options enabled (all options)"
 
           cat arch/arm64/configs/vendor/xiaomi/sdm660_defconfig \
               arch/arm64/configs/vendor/xiaomi/clover.config \
@@ -259,6 +428,12 @@ jobs:
                       f.write(s)
                   print(f"Fixed CPU masks in {p}")
 
+      - name: Diagnostic — show resolved KSU config
+        working-directory: kernel
+        run: |
+          echo "=== CONFIG_KSU lines in out/.config (after alldefconfig) ==="
+          grep -E "^CONFIG_KSU" out/.config || echo "no CONFIG_KSU lines found"
+
       - name: Build kernel
         working-directory: kernel
         run: |
@@ -268,6 +443,12 @@ jobs:
             CC=$CC \
             CROSS_COMPILE=$CROSS_COMPILE \
             CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32
+
+      - name: Verify KSU config in final build
+        working-directory: kernel
+        run: |
+          echo "=== Final CONFIG_KSU lines ==="
+          grep -E "^CONFIG_KSU|^# CONFIG_KSU" out/.config || echo "no CONFIG_KSU lines found"
 
       - name: Upload raw kernel images
         uses: actions/upload-artifact@v4

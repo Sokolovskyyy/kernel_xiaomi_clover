@@ -2,10 +2,6 @@ name: GetManager
 
 on:
   workflow_call:
-    inputs:
-      kernelsu_variant:
-        required: true
-        type: string
     outputs:
       susVer:
         description: "The fetched SUSFS version number"
@@ -23,16 +19,6 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - name: Debug Workflow Caller Context
-        run: |
-          echo "=== DEBUG CONTEXT ==="
-          echo "EVENT NAME: ${{ github.event_name }}"
-          echo "Caller Repository: ${{ github.caller_repository }}"
-          echo "Caller Workflow: ${{ github.caller_workflow }}"
-          echo "Caller User: ${{ github.triggering_actor }}"
-          echo "Git Ref: ${{ github.ref }}"
-          echo "====================="
-
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -41,17 +27,13 @@ jobs:
       - name: Get KSU & SUSFS version
         id: get_version
         run: |
-          if [ "${{ inputs.kernelsu_variant }}" == "ReSukiSU" ]; then
-            echo "ReSukiSU variant"
-            git clone https://github.com/ReSukiSU/ReSukiSU.git KernelSU
-          else
-            echo "Unknown variant: ${{ inputs.kernelsu_variant }}"
-            exit 1
-          fi
+          echo "Cloning KernelSU-Next..."
+          git clone https://github.com/KernelSU-Next/KernelSU-Next.git KernelSU
 
           cd KernelSU
           KSU_GIT_VERSION=$(git rev-list --count HEAD)
-          KSU_VERSION=$((30700 + KSU_GIT_VERSION))
+          # KernelSU-Next version: major * 10000 + git version + 200 for historical reasons
+          KSU_VERSION=$((10000 + KSU_GIT_VERSION + 200))
           echo "KSU_VERSION=$KSU_VERSION"
           echo "KSU_VERSION=$KSU_VERSION" >> $GITHUB_ENV
 
@@ -62,13 +44,12 @@ jobs:
           echo "kversion=$KSU_VERSION" >> $GITHUB_OUTPUT
           echo "sversion=$SUS_VERSION" >> $GITHUB_OUTPUT
 
-      - name: Fetch ReSukiSU Manager
+      - name: Fetch KernelSU-Next Manager
         id: add_KSU
         continue-on-error: true
         run: |
-          REPO="ReSukiSU/ReSukiSU"
-          KSUM="manager"
-          FILENAME="build-manager.yml"
+          REPO="KernelSU-Next/KernelSU-Next"
+          FILENAME="build-manager-ci.yml"
 
           TARGET_KSU_VERSION="${KSU_VERSION:-}"
           if ! [[ "$TARGET_KSU_VERSION" =~ ^[0-9]+$ ]]; then
@@ -86,13 +67,13 @@ jobs:
             fi
             local git_version
             git_version=$(git -C KernelSU rev-list --count "$head_sha")
-            echo $((30700 + git_version))
+            echo $((10000 + git_version + 200))
           }
 
           get_manager_artifacts() {
             local artifacts="$1"
             printf '%s' "$artifacts" | jq -r \
-              '.artifacts[] | select(.name == "Manager-release" or .name == "Spoofed-Manager-release") | "\(.name)\t\(.archive_download_url)"'
+              '.artifacts[] | select(.name == "Manager-release" or .name == "Manager" or .name == "Spoofed-Manager-release") | "\(.name)\t\(.archive_download_url)"'
           }
 
           DOWNLOAD_LIST=""
@@ -151,7 +132,7 @@ jobs:
 
           echo "$DOWNLOAD_LIST" | while IFS=$'\t' read -r NAME URL; do
             SAFE_NAME=$(echo "$NAME" | tr '/ ' '__')
-            ZIP_NAME="${{ inputs.kernelsu_variant }}-${SAFE_NAME}(${{ env.KSU_VERSION }}).zip"
+            ZIP_NAME="KernelSU-Next-${SAFE_NAME}(${{ env.KSU_VERSION }}).zip"
             echo "Downloading $NAME -> $ZIP_NAME"
             curl -L -H "Authorization: token $GH_TOKEN" -o "$ZIP_NAME" "$URL"
             mkdir -p "manager-artifacts/$SAFE_NAME"
@@ -159,12 +140,18 @@ jobs:
             rm -rf "$ZIP_NAME"
           done
 
-          # Keep only arm64-v8a release APKs, drop debug
-          echo "Keeping only arm64-v8a release APKs..."
-          find manager-artifacts -type f -name "*.apk" ! -name "*-arm64-v8a-release.apk" -delete
+          # Keep only release APKs, drop debug
+          echo "Keeping only release APKs..."
           find manager-artifacts -type f -name "*debug*.apk" -delete
-          if ! find manager-artifacts -type f -name "*-arm64-v8a-release.apk" | grep -q .; then
-            echo "No arm64-v8a release Manager APK found"
+
+          if find manager-artifacts -type f -name "*-universal-release.apk" | grep -q .; then
+            echo "Found universal release APK"
+            find manager-artifacts -type f -name "*.apk" ! -name "*-universal-release.apk" -delete
+          elif find manager-artifacts -type f -name "*-release.apk" | grep -q .; then
+            echo "No universal APK found, keeping per-ABI release APKs"
+            find manager-artifacts -type f -name "*.apk" ! -name "*-release.apk" -delete
+          else
+            echo "No release Manager APK found"
             exit 1
           fi
           find manager-artifacts -type f -name "*.apk" -print
@@ -205,7 +192,7 @@ jobs:
         if: steps.add_KSU.outcome == 'success'
         uses: actions/upload-artifact@v6
         with:
-          name: ${{ inputs.kernelsu_variant }}-Manager(${{ env.KSU_VERSION }})
+          name: KernelSU-Next-Manager(${{ env.KSU_VERSION }})
           path: |
             manager-artifacts/**/*.apk
 
