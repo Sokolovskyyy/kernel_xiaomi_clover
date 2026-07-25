@@ -311,18 +311,19 @@ jobs:
               c = strip_ksu_blocks(c, TAG)
               lines = c.split('\n')
 
-              # --- do_execveat_common: search flexibly for do_execve() call ---
-              # The actual kernel may use different arg names (e.g. getname(filename))
-              # Strategy: find "do_execveat_common" function, then find "return do_execve(" inside it
+              # --- do_execveat_common: search flexibly for any return call ---
+              # In 4.19 kernels this may be:
+              #   return do_execve(filename, argv, envp);
+              #   return __do_execve_file(fd, filename, argv, envp, flags, NULL);
+              #   return do_execveat_common(...)
 
               de_idx = find_line(lines, 'do_execveat_common')
               main_hook_ok = False
               if de_idx is not None:
-                  # Search within next 80 lines for return do_execve(
+                  # Search within next 80 lines for any return statement with do_execve or __do_execve
                   for i in range(de_idx, min(de_idx + 80, len(lines))):
-                      m = re.search(r'return\s+do_execve\s*\(', lines[i])
+                      m = re.search(r'return\s+(__)?do_execve\w*\s*\(', lines[i])
                       if m:
-                          # Found it — extract the full return line to use as anchor
                           anchor_line = lines[i].rstrip()
                           hook_block = (
                               "#ifdef CONFIG_KSU\n"
@@ -330,21 +331,14 @@ jobs:
                               "#endif\n"
                               f"\t{anchor_line}"
                           )
-                          # Verify this is the right function (should be do_execveat_common)
-                          preceding = '\n'.join(lines[max(0, i-500):i])
-                          if 'do_execveat_common' in preceding or 'do_execveat_common' in '\n'.join(lines[max(0, de_idx):i]):
-                              lines[i] = hook_block
-                              c = '\n'.join(lines)
-                              print(f"  [{TAG}] {HOOK} inserted in do_execveat_common ✓")
-                              print(f"    anchored on: {anchor_line.strip()}")
-                              main_hook_ok = True
-                          else:
-                              print(f"  [{TAG}] ⚠ WARNING: do_execve() return found but do_execveat_common not in preceding context")
-                              print(f"    line {i+1}: {anchor_line.strip()}")
+                          lines[i] = hook_block
+                          c = '\n'.join(lines)
+                          print(f"  [{TAG}] {HOOK} inserted in do_execveat_common ✓")
+                          print(f"    anchored on: {anchor_line.strip()}")
+                          main_hook_ok = True
                           break
                   if not main_hook_ok and de_idx is not None:
-                      # Show context around do_execveat_common for manual review
-                      print(f"  [{TAG}] ⚠ WARNING: could not find 'return do_execve(' inside do_execveat_common")
+                      print(f"  [{TAG}] ⚠ WARNING: no 'return do_execve*' found inside do_execveat_common")
                       start = max(0, de_idx - 2)
                       end = min(len(lines), de_idx + 20)
                       print(f"    Context (lines {start+1}-{end}):")
@@ -352,9 +346,9 @@ jobs:
                           marker = ">>>" if j == de_idx else "   "
                           print(f"      {marker} {j+1}: {lines[j]}")
               else:
-                  # Fallback: search for any return do_execve( line
+                  # Fallback: search for any return do_execve* line anywhere
                   for i, line in enumerate(lines):
-                      m = re.search(r'return\s+do_execve\s*\(', line)
+                      m = re.search(r'return\s+(__)?do_execve\w*\s*\(', line)
                       if m:
                           anchor_line = line.rstrip()
                           hook_block = (
@@ -372,8 +366,7 @@ jobs:
                               main_hook_ok = True
                           break
                   if not main_hook_ok:
-                      print(f"  [{TAG}] ❌ FATAL: no 'return do_execve(' found anywhere in file")
-                      # Dump do_execveat_common area if it exists
+                      print(f"  [{TAG}] ❌ FATAL: no 'return do_execve*' found anywhere in file")
                       for i, line in enumerate(lines):
                           if 'do_execveat_common' in line:
                               start = max(0, i - 2)
@@ -829,9 +822,48 @@ jobs:
           if os.path.exists(p):
               with open(p, "r", encoding="utf-8", errors="surrogateescape") as f:
                   s = f.read()
-              if "CONFIG_KSU_SUSFS_OPEN_REDIRECT" in s:
-                  print(f"{p}: already patched (OPEN_REDIRECT present)")
+              # Check if the full patch is applied (declaration present)
+              has_decl = "char *spoofed_redirected_name" in s
+              has_usage = "spoofed_redirected_name" in s
+              if has_decl and has_usage:
+                  print(f"{p}: already fully patched (declaration + usage present)")
+              elif has_usage and not has_decl:
+                  # SUSFS patch partially applied: usage hunk succeeded but
+                  # declaration hunk failed. Insert declaration after
+                  # 'const char *name = NULL;' in show_map_vma().
+                  print(f"{p}: usage present but declaration MISSING — fixing...")
+                  lines = s.split('\n')
+                  decl_anchor = "const char *name = NULL;"
+                  decl_idx = None
+                  for i, line in enumerate(lines):
+                      if decl_anchor in line:
+                          decl_idx = i
+                          break
+                  if decl_idx is not None:
+                      decl_block = (
+                          "#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT\n"
+                          "\tchar *spoofed_redirected_name = NULL;\n"
+                          "#endif"
+                      )
+                      lines.insert(decl_idx + 1, decl_block)
+                      s = '\n'.join(lines)
+                      with open(p, "w", encoding="utf-8", errors="surrogateescape") as f:
+                          f.write(s)
+                      print(f"{p}: inserted missing declaration after line {decl_idx + 1} ✓")
+                  else:
+                      print(f"WARNING: '{decl_anchor}' not found in {p} — cannot insert declaration")
+                      print("  Searching for show_map_vma context...")
+                      for i, line in enumerate(lines):
+                          if 'show_map_vma' in line:
+                              start = max(0, i - 2)
+                              end = min(len(lines), i + 15)
+                              print(f"  Context around line {i + 1}:")
+                              for j in range(start, end):
+                                  marker = ">>>" if j == i else "   "
+                                  print(f"    {marker} {j + 1}: {lines[j]}")
+                              break
               else:
+                  # No SUSFS patches at all — apply full anchor-based patch
                   anchor = (
                       "\tif (file) {\n"
                       "\t\tstruct inode *inode = file_inode(vma->vm_file);\n"
