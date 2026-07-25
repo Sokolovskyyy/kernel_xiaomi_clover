@@ -200,19 +200,461 @@ jobs:
           echo "=== Final drivers/kernelsu/Kconfig ==="
           cat "$KCONFIG"
 
-      - name: Verify AlcatrazDev hooks (kept for legacy manual hook mode)
+      - name: "Apply official KernelSU-Next manual hooks (5 files)"
         working-directory: kernel
+        shell: python3
         run: |
-          echo "=== AlcatrazDev hook locations (kept as-is for legacy driver) ==="
-          for f in fs/exec.c fs/read_write.c drivers/input/input.c; do
-            if [ -f "$f" ]; then
-              hits=$(grep -c 'CONFIG_KSU' "$f" 2>/dev/null || echo 0)
-              echo "$f: $hits CONFIG_KSU references"
-            fi
-          done
-          echo ""
-          echo "Legacy driver uses manual hooks (ksu_handle_sys_reboot, etc.)"
-          echo "AlcatrazDev hooks provide the userspace-facing syscalls"
+          """
+          Apply 5 official KernelSU-Next legacy manual hooks.
+          Replaces old ReSukiSU/AlcatrazDev hooks that use undefined symbols.
+
+          For each file:
+            1. Strip old AlcatrazDev CONFIG_KSU blocks (if present)
+            2. Insert official KernelSU-Next hook at canonical anchor
+            3. If anchor NOT found -> FATAL WARNING with surrounding context (no silent skip)
+          """
+          import re, sys, os
+
+          results = []
+
+          # ── helpers ──────────────────────────────────────────────────
+          def read_file(path):
+              with open(path, 'r', encoding='utf-8', errors='surrogateescape') as f:
+                  return f.read()
+
+          def write_file(path, content):
+              with open(path, 'w', encoding='utf-8', errors='surrogateescape') as f:
+                  f.write(content)
+
+          def show_context(content, anchor_text, context_lines=8):
+              """Print surrounding lines around anchor_text in content."""
+              lines = content.split('\n')
+              for i, line in enumerate(lines):
+                  if anchor_text in line:
+                      start = max(0, i - context_lines)
+                      end = min(len(lines), i + context_lines + 1)
+                      print(f"    Context (lines {start+1}-{end}):")
+                      for j in range(start, end):
+                          marker = ">>>" if j == i else "   "
+                          print(f"      {marker} {j+1}: {lines[j]}")
+                      return True
+              print(f"    Anchor '{anchor_text}' not found anywhere in file.")
+              print(f"    First 40 lines for reference:")
+              for i, line in enumerate(lines[:40]):
+                  print(f"      {i+1}: {line}")
+              return False
+
+          def strip_ksu_blocks(content, tag):
+              """Remove old CONFIG_KSU / KSU blocks from file."""
+              orig_len = len(content)
+              content = re.sub(r'\n#ifdef CONFIG_KSU.*?#endif\n', '\n', content, flags=re.DOTALL)
+              content = re.sub(r'\n#if defined\(KSU\).*?#endif\n', '\n', content, flags=re.DOTALL)
+              for dead in ['ksu_execveat_hook', 'ksu_vfs_read_hook', 'ksu_input_hook']:
+                  content = re.sub(rf'\n.*extern.*{re.escape(dead)}.*\n', '\n', content)
+              diff = orig_len - len(content)
+              if diff > 0:
+                  print(f"  [{tag}] Stripped {diff} bytes of old CONFIG_KSU blocks")
+              else:
+                  print(f"  [{tag}] No old CONFIG_KSU blocks found (clean)")
+              return content
+
+          def find_line(lines, anchor):
+              """Return index of first line containing anchor, or None."""
+              for i, line in enumerate(lines):
+                  if anchor in line:
+                      return i
+              return None
+
+          # ═══════════════════════════════════════════════════════════════
+          # 1. fs/exec.c — ksu_handle_execveat
+          # ═══════════════════════════════════════════════════════════════
+          TAG = 'fs/exec.c'
+          HOOK = 'ksu_handle_execveat'
+          print(f"=== Hook 1/5: {TAG} — {HOOK} ===")
+          ok_exec = False
+
+          try:
+              c = read_file(TAG)
+          except FileNotFoundError:
+              print(f"  ❌  FATAL: {TAG} not found!")
+              results.append((TAG, HOOK, False)); ok_exec = False; c = None
+
+          if c is not None:
+              c = strip_ksu_blocks(c, TAG)
+              lines = c.split('\n')
+
+              # --- do_execveat_common: hook before "return do_execve(filename, argv, envp)" ---
+              anchor_exec = "return do_execve(filename, argv, envp);"
+              hook_exec = (
+                  "#ifdef CONFIG_KSU\n"
+                  "\tksu_handle_execveat((int *)fd, &filename, &argv, &envp, flags);\n"
+                  "#endif\n"
+                  "\treturn do_execve(filename, argv, envp);"
+              )
+              if hook_exec in c:
+                  print(f"  [{TAG}] {HOOK} in do_execveat_common already present ✓")
+                  ok_exec = True
+              elif anchor_exec in c:
+                  idx = c.index(anchor_exec)
+                  preceding = c[max(0, idx-500):idx]
+                  if "do_execveat_common" in preceding:
+                      c = c.replace(anchor_exec, hook_exec, 1)
+                      print(f"  [{TAG}] {HOOK} inserted in do_execveat_common ✓")
+                      ok_exec = True
+                  else:
+                      print(f"  [{TAG}] ⚠ WARNING: 'return do_execve(filename' found but 'do_execveat_common' not in preceding 500 chars")
+                      ok_exec = False
+              else:
+                  print(f"  [{TAG}] ❌ FATAL: anchor not found:")
+                  show_context(c, anchor_exec)
+                  ok_exec = False
+
+              # --- compat_do_execveat_common ---
+              anchor_compat = "return compat_do_execveat_common(fd, filename, argv, envp);"
+              hook_compat = (
+                  "#ifdef CONFIG_KSU\n"
+                  "\tksu_handle_execveat((int *)fd, &filename, &argv, &envp, flags);\n"
+                  "#endif\n"
+                  "\treturn compat_do_execveat_common(fd, filename, argv, envp);"
+              )
+              if hook_compat in c:
+                  print(f"  [{TAG}] compat hook already present ✓")
+              elif anchor_compat in c:
+                  c = c.replace(anchor_compat, hook_compat, 1)
+                  print(f"  [{TAG}] compat_do_execveat_common hook inserted ✓")
+              else:
+                  # Check for other compat variants
+                  compat_fn = re.search(r'return\s+compat_do_execve\w*\s*\(', c)
+                  if compat_fn:
+                      idx = compat_fn.start()
+                      line_s = c.rfind('\n', 0, idx) + 1
+                      line_e = c.find('\n', idx)
+                      print(f"  [{TAG}] ⚠ WARNING: unrecognized compat variant: {c[line_s:line_e]}")
+                  else:
+                      print(f"  [{TAG}] INFO: no compat_do_execve function found (may not exist in 4.19)")
+
+              # --- Insert extern declarations ---
+              # Externs go before the SYSCALL_DEFINE3(execve line
+              if "extern int ksu_handle_execveat" not in c:
+                  extern_block = (
+                      "#ifdef CONFIG_KSU\n"
+                      "extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);\n"
+                      "#endif\n"
+                  )
+                  marker = "SYSCALL_DEFINE3(execve,"
+                  idx = find_line(lines, marker)
+                  if idx is not None:
+                      # Re-split after potential replacements
+                      lines = c.split('\n')
+                      lines.insert(idx, extern_block)
+                      c = '\n'.join(lines)
+                      print(f"  [{TAG}] Inserted extern declaration ✓")
+                  else:
+                      print(f"  [{TAG}] ⚠ WARNING: SYSCALL_DEFINE3(execve not found for extern placement")
+
+              write_file(TAG, c)
+              results.append((TAG, HOOK, ok_exec))
+
+          # ═══════════════════════════════════════════════════════════════
+          # 2. fs/open.c — ksu_handle_faccessat
+          # ═══════════════════════════════════════════════════════════════
+          TAG = 'fs/open.c'
+          HOOK = 'ksu_handle_faccessat'
+          print(f"\n=== Hook 2/5: {TAG} — {HOOK} ===")
+          ok_open = False
+
+          try:
+              c = read_file(TAG)
+          except FileNotFoundError:
+              print(f"  ❌  FATAL: {TAG} not found!")
+              results.append((TAG, HOOK, False)); ok_open = False; c = None
+
+          if c is not None:
+              c = strip_ksu_blocks(c, TAG)
+
+              if HOOK in c:
+                  print(f"  [{TAG}] {HOOK} already present ✓")
+                  results.append((TAG, HOOK, True))
+              else:
+                  lines = c.split('\n')
+                  # Find SYSCALL_DEFINE3(faccessat,
+                  marker = "SYSCALL_DEFINE3(faccessat,"
+                  faccessat_idx = find_line(lines, marker)
+                  if faccessat_idx is None:
+                      print(f"  [{TAG}] ❌ FATAL: anchor not found:")
+                      show_context(c, marker)
+                      results.append((TAG, HOOK, False))
+                  else:
+                      # Brace-count to find end of function
+                      brace_count = 0
+                      func_end = None
+                      in_func = False
+                      for i in range(faccessat_idx, min(faccessat_idx + 100, len(lines))):
+                          for ch in lines[i]:
+                              if ch == '{':
+                                  brace_count += 1
+                                  in_func = True
+                              elif ch == '}':
+                                  brace_count -= 1
+                                  if in_func and brace_count == 0:
+                                      func_end = i
+                                      break
+                          if func_end is not None:
+                              break
+
+                      if func_end is None:
+                          print(f"  [{TAG}] ⚠ WARNING: could not find closing brace of faccessat")
+                          show_context(c, marker, 15)
+                          results.append((TAG, HOOK, False))
+                      else:
+                          # Find last return before closing brace
+                          return_line = None
+                          for i in range(func_end - 1, faccessat_idx, -1):
+                              if lines[i].strip().startswith('return'):
+                                  return_line = i
+                                  break
+
+                          if return_line is None:
+                              print(f"  [{TAG}] ⚠ WARNING: no return statement before closing brace")
+                              results.append((TAG, HOOK, False))
+                          else:
+                              hook_block = (
+                                  "#ifdef CONFIG_KSU\n"
+                                  "\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n"
+                                  "#endif"
+                              )
+                              lines.insert(return_line, hook_block)
+                              c = '\n'.join(lines)
+
+                              # Insert extern
+                              extern_block = (
+                                  "#ifdef CONFIG_KSU\n"
+                                  "extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);\n"
+                                  "#endif"
+                              )
+                              idx = find_line(lines, marker)
+                              if idx is not None:
+                                  lines = c.split('\n')
+                                  lines.insert(idx, extern_block)
+                                  c = '\n'.join(lines)
+                                  print(f"  [{TAG}] {HOOK} inserted in SYSCALL_DEFINE3(faccessat) ✓")
+                                  results.append((TAG, HOOK, True))
+                              else:
+                                  print(f"  [{TAG}] {HOOK} inserted (extern skipped — marker shifted) ✓")
+                                  results.append((TAG, HOOK, True))
+
+                  write_file(TAG, c)
+
+          # ═══════════════════════════════════════════════════════════════
+          # 3. fs/read_write.c — ksu_handle_sys_read + ksu_vfs_read_hook
+          # ═══════════════════════════════════════════════════════════════
+          TAG = 'fs/read_write.c'
+          HOOK = 'ksu_handle_sys_read'
+          print(f"\n=== Hook 3/5: {TAG} — {HOOK} ===")
+          ok_rw = False
+
+          try:
+              c = read_file(TAG)
+          except FileNotFoundError:
+              print(f"  ❌  FATAL: {TAG} not found!")
+              results.append((TAG, HOOK, False)); ok_rw = False; c = None
+
+          if c is not None:
+              c = strip_ksu_blocks(c, TAG)
+
+              if HOOK in c and 'ksu_vfs_read_hook' in c:
+                  print(f"  [{TAG}] {HOOK} already present ✓")
+                  results.append((TAG, HOOK, True))
+              else:
+                  lines = c.split('\n')
+                  marker = "SYSCALL_DEFINE3(read,"
+                  read_idx = find_line(lines, marker)
+                  if read_idx is None:
+                      print(f"  [{TAG}] ❌ FATAL: anchor not found:")
+                      show_context(c, marker)
+                      results.append((TAG, HOOK, False))
+                  else:
+                      # Find "return vfs_read" within next 60 lines
+                      vfs_read_idx = None
+                      for i in range(read_idx, min(read_idx + 60, len(lines))):
+                          if 'return vfs_read' in lines[i]:
+                              vfs_read_idx = i
+                              break
+
+                      if vfs_read_idx is None:
+                          print(f"  [{TAG}] ⚠ WARNING: 'return vfs_read' not found near SYSCALL_DEFINE3(read)")
+                          show_context(c, marker, 15)
+                          results.append((TAG, HOOK, False))
+                      else:
+                          hook_block = (
+                              "#ifdef CONFIG_KSU\n"
+                              "\tif (unlikely(ksu_vfs_read_hook))\n"
+                              "\t\tksu_handle_sys_read(fd, &buf, &count);\n"
+                              "#endif"
+                          )
+                          lines.insert(vfs_read_idx, hook_block)
+                          c = '\n'.join(lines)
+
+                          # Insert externs before the marker
+                          externs = (
+                              "#ifdef CONFIG_KSU\n"
+                              "extern bool ksu_vfs_read_hook __read_mostly;\n"
+                              "extern int ksu_handle_sys_read(unsigned int fd, char __user **buf_ptr, size_t *count_ptr);\n"
+                              "#endif"
+                          )
+                          lines = c.split('\n')
+                          idx = find_line(lines, marker)
+                          if idx is not None:
+                              lines.insert(idx, externs)
+                              c = '\n'.join(lines)
+
+                          print(f"  [{TAG}] {HOOK} + ksu_vfs_read_hook inserted in SYSCALL_DEFINE3(read) ✓")
+                          results.append((TAG, HOOK, True))
+
+                  write_file(TAG, c)
+
+          # ═══════════════════════════════════════════════════════════════
+          # 4. fs/stat.c — ksu_handle_stat
+          # ═══════════════════════════════════════════════════════════════
+          TAG = 'fs/stat.c'
+          HOOK = 'ksu_handle_stat'
+          print(f"\n=== Hook 4/5: {TAG} — {HOOK} ===")
+          ok_stat = False
+
+          try:
+              c = read_file(TAG)
+          except FileNotFoundError:
+              print(f"  ❌  FATAL: {TAG} not found!")
+              results.append((TAG, HOOK, False)); ok_stat = False; c = None
+
+          if c is not None:
+              c = strip_ksu_blocks(c, TAG)
+
+              if HOOK in c:
+                  print(f"  [{TAG}] {HOOK} already present ✓")
+                  results.append((TAG, HOOK, True))
+              else:
+                  lines = c.split('\n')
+                  marker = "SYSCALL_DEFINE4(newfstatat,"
+                  nf_idx = find_line(lines, marker)
+                  if nf_idx is None:
+                      print(f"  [{TAG}] ❌ FATAL: anchor not found:")
+                      show_context(c, marker)
+                      results.append((TAG, HOOK, False))
+                  else:
+                      # Find opening brace
+                      brace_line = None
+                      for i in range(nf_idx, min(nf_idx + 10, len(lines))):
+                          if '{' in lines[i]:
+                              brace_line = i
+                              break
+
+                      if brace_line is None:
+                          print(f"  [{TAG}] ⚠ WARNING: opening brace not found after SYSCALL_DEFINE4(newfstatat)")
+                          show_context(c, marker, 10)
+                          results.append((TAG, HOOK, False))
+                      else:
+                          hook_block = (
+                              "#ifdef CONFIG_KSU\n"
+                              "\tksu_handle_stat(&dfd, &filename, &flag);\n"
+                              "#endif"
+                          )
+                          lines.insert(brace_line + 1, hook_block)
+                          c = '\n'.join(lines)
+
+                          # Insert extern before marker
+                          extern_block = "#ifdef CONFIG_KSU\nextern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\n#endif"
+                          lines = c.split('\n')
+                          idx = find_line(lines, marker)
+                          if idx is not None:
+                              lines.insert(idx, extern_block)
+                              c = '\n'.join(lines)
+
+                          print(f"  [{TAG}] {HOOK} inserted in SYSCALL_DEFINE4(newfstatat) ✓")
+                          results.append((TAG, HOOK, True))
+
+                  write_file(TAG, c)
+
+          # ═══════════════════════════════════════════════════════════════
+          # 5. kernel/reboot.c — ksu_handle_sys_reboot
+          # ═══════════════════════════════════════════════════════════════
+          TAG = 'kernel/reboot.c'
+          HOOK = 'ksu_handle_sys_reboot'
+          print(f"\n=== Hook 5/5: {TAG} — {HOOK} ===")
+          ok_reboot = False
+
+          try:
+              c = read_file(TAG)
+          except FileNotFoundError:
+              print(f"  ❌  FATAL: {TAG} not found!")
+              results.append((TAG, HOOK, False)); ok_reboot = False; c = None
+
+          if c is not None:
+              c = strip_ksu_blocks(c, TAG)
+
+              if HOOK in c:
+                  print(f"  [{TAG}] {HOOK} already present ✓")
+                  results.append((TAG, HOOK, True))
+              else:
+                  lines = c.split('\n')
+                  marker = "SYSCALL_DEFINE4(reboot,"
+                  rb_idx = find_line(lines, marker)
+                  if rb_idx is None:
+                      print(f"  [{TAG}] ❌ FATAL: anchor not found:")
+                      show_context(c, marker)
+                      results.append((TAG, HOOK, False))
+                  else:
+                      brace_line = None
+                      for i in range(rb_idx, min(rb_idx + 10, len(lines))):
+                          if '{' in lines[i]:
+                              brace_line = i
+                              break
+
+                      if brace_line is None:
+                          print(f"  [{TAG}] ⚠ WARNING: opening brace not found after SYSCALL_DEFINE4(reboot)")
+                          show_context(c, marker, 10)
+                          results.append((TAG, HOOK, False))
+                      else:
+                          hook_block = (
+                              "#ifdef CONFIG_KSU\n"
+                              "\tksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\n"
+                              "#endif"
+                          )
+                          lines.insert(brace_line + 1, hook_block)
+                          c = '\n'.join(lines)
+
+                          extern_block = "#ifdef CONFIG_KSU\nextern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);\n#endif"
+                          lines = c.split('\n')
+                          idx = find_line(lines, marker)
+                          if idx is not None:
+                              lines.insert(idx, extern_block)
+                              c = '\n'.join(lines)
+
+                          print(f"  [{TAG}] {HOOK} inserted ✓")
+                          results.append((TAG, HOOK, True))
+
+                  write_file(TAG, c)
+
+          # ═══════════════════════════════════════════════════════════════
+          # Summary
+          # ═══════════════════════════════════════════════════════════════
+          print("\n" + "=" * 60)
+          print("HOOK APPLICATION SUMMARY")
+          print("=" * 60)
+          passed = sum(1 for _, _, ok in results if ok)
+          failed = sum(1 for _, _, ok in results if not ok)
+          for fname, hook, ok in results:
+              status = "✓ PASS" if ok else "❌ FAIL"
+              print(f"  {status}  {fname} — {hook}")
+          print(f"\n  Total: {passed} passed, {failed} failed out of {len(results)}")
+          if failed:
+              print(f"\n  ⚠  {failed} hook(s) FAILED — build WILL fail at compile/link time.")
+              print("     Review the WARNING / FATAL output above for each failed hook.")
+              print("     The failing hook anchor may need manual patching.")
+              print("     Build will proceed anyway to see which hooks compile correctly.")
+          else:
+              print("\n  All 5 hooks applied successfully ✓")
+          print("=" * 60)
 
       - name: Apply SUSFS backport patch
         working-directory: kernel
