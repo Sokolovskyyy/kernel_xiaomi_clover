@@ -266,6 +266,33 @@ jobs:
                       return i
               return None
 
+          def skip_declarations(lines, start, max_lines=30):
+              """From start, skip past C90 declarations (struct/int/etc lines ending with ;).
+              Return index of first executable/non-declaration line."""
+              decl_re = re.compile(
+                  r'^\s*(static\s+)?(const\s+)?'
+                  r'(struct|union|enum|int|unsigned|signed|long|short|char|void|'
+                  r'size_t|ssize_t|loff_t|pid_t|bool|u32|u64|__u\d+|dev_t|'
+                  r'mm_segment_t|struct\s+\w+)\s+'
+              )
+              for i in range(start, min(start + max_lines, len(lines))):
+                  stripped = lines[i].strip()
+                  if not stripped or stripped.startswith('//') or stripped.startswith('/*') or stripped.startswith('*'):
+                      continue
+                  if stripped == '{':
+                      continue
+                  if stripped.startswith('#'):
+                      continue
+                  # Lines ending with ; that look like declarations
+                  if decl_re.match(stripped):
+                      continue
+                  # Simple heuristic: if it has = and ;, probably a declaration
+                  if '=' in stripped and stripped.endswith(';') and 'return' not in stripped:
+                      continue
+                  # This looks like executable code
+                  return i
+              return start  # fallback
+
           # ═══════════════════════════════════════════════════════════════
           # 1. fs/exec.c — ksu_handle_execveat
           # ═══════════════════════════════════════════════════════════════
@@ -284,58 +311,106 @@ jobs:
               c = strip_ksu_blocks(c, TAG)
               lines = c.split('\n')
 
-              # --- do_execveat_common: hook before "return do_execve(filename, argv, envp)" ---
-              anchor_exec = "return do_execve(filename, argv, envp);"
-              hook_exec = (
-                  "#ifdef CONFIG_KSU\n"
-                  "\tksu_handle_execveat((int *)fd, &filename, &argv, &envp, flags);\n"
-                  "#endif\n"
-                  "\treturn do_execve(filename, argv, envp);"
-              )
-              if hook_exec in c:
-                  print(f"  [{TAG}] {HOOK} in do_execveat_common already present ✓")
-                  ok_exec = True
-              elif anchor_exec in c:
-                  idx = c.index(anchor_exec)
-                  preceding = c[max(0, idx-500):idx]
-                  if "do_execveat_common" in preceding:
-                      c = c.replace(anchor_exec, hook_exec, 1)
-                      print(f"  [{TAG}] {HOOK} inserted in do_execveat_common ✓")
-                      ok_exec = True
-                  else:
-                      print(f"  [{TAG}] ⚠ WARNING: 'return do_execve(filename' found but 'do_execveat_common' not in preceding 500 chars")
-                      ok_exec = False
-              else:
-                  print(f"  [{TAG}] ❌ FATAL: anchor not found:")
-                  show_context(c, anchor_exec)
-                  ok_exec = False
+              # --- do_execveat_common: search flexibly for do_execve() call ---
+              # The actual kernel may use different arg names (e.g. getname(filename))
+              # Strategy: find "do_execveat_common" function, then find "return do_execve(" inside it
 
-              # --- compat_do_execveat_common ---
-              anchor_compat = "return compat_do_execveat_common(fd, filename, argv, envp);"
-              hook_compat = (
-                  "#ifdef CONFIG_KSU\n"
-                  "\tksu_handle_execveat((int *)fd, &filename, &argv, &envp, flags);\n"
-                  "#endif\n"
-                  "\treturn compat_do_execveat_common(fd, filename, argv, envp);"
-              )
-              if hook_compat in c:
-                  print(f"  [{TAG}] compat hook already present ✓")
-              elif anchor_compat in c:
-                  c = c.replace(anchor_compat, hook_compat, 1)
-                  print(f"  [{TAG}] compat_do_execveat_common hook inserted ✓")
+              de_idx = find_line(lines, 'do_execveat_common')
+              main_hook_ok = False
+              if de_idx is not None:
+                  # Search within next 80 lines for return do_execve(
+                  for i in range(de_idx, min(de_idx + 80, len(lines))):
+                      m = re.search(r'return\s+do_execve\s*\(', lines[i])
+                      if m:
+                          # Found it — extract the full return line to use as anchor
+                          anchor_line = lines[i].rstrip()
+                          hook_block = (
+                              "#ifdef CONFIG_KSU\n"
+                              "\tksu_handle_execveat((int *)fd, &filename, &argv, &envp, flags);\n"
+                              "#endif\n"
+                              f"\t{anchor_line}"
+                          )
+                          # Verify this is the right function (should be do_execveat_common)
+                          preceding = '\n'.join(lines[max(0, i-500):i])
+                          if 'do_execveat_common' in preceding or 'do_execveat_common' in '\n'.join(lines[max(0, de_idx):i]):
+                              lines[i] = hook_block
+                              c = '\n'.join(lines)
+                              print(f"  [{TAG}] {HOOK} inserted in do_execveat_common ✓")
+                              print(f"    anchored on: {anchor_line.strip()}")
+                              main_hook_ok = True
+                          else:
+                              print(f"  [{TAG}] ⚠ WARNING: do_execve() return found but do_execveat_common not in preceding context")
+                              print(f"    line {i+1}: {anchor_line.strip()}")
+                          break
+                  if not main_hook_ok and de_idx is not None:
+                      # Show context around do_execveat_common for manual review
+                      print(f"  [{TAG}] ⚠ WARNING: could not find 'return do_execve(' inside do_execveat_common")
+                      start = max(0, de_idx - 2)
+                      end = min(len(lines), de_idx + 20)
+                      print(f"    Context (lines {start+1}-{end}):")
+                      for j in range(start, end):
+                          marker = ">>>" if j == de_idx else "   "
+                          print(f"      {marker} {j+1}: {lines[j]}")
               else:
-                  # Check for other compat variants
-                  compat_fn = re.search(r'return\s+compat_do_execve\w*\s*\(', c)
-                  if compat_fn:
-                      idx = compat_fn.start()
-                      line_s = c.rfind('\n', 0, idx) + 1
-                      line_e = c.find('\n', idx)
-                      print(f"  [{TAG}] ⚠ WARNING: unrecognized compat variant: {c[line_s:line_e]}")
-                  else:
-                      print(f"  [{TAG}] INFO: no compat_do_execve function found (may not exist in 4.19)")
+                  # Fallback: search for any return do_execve( line
+                  for i, line in enumerate(lines):
+                      m = re.search(r'return\s+do_execve\s*\(', line)
+                      if m:
+                          anchor_line = line.rstrip()
+                          hook_block = (
+                              "#ifdef CONFIG_KSU\n"
+                              "\tksu_handle_execveat((int *)fd, &filename, &argv, &envp, flags);\n"
+                              "#endif\n"
+                              f"\t{anchor_line}"
+                          )
+                          preceding = '\n'.join(lines[max(0, i-500):i])
+                          if 'execveat_common' in preceding:
+                              lines[i] = hook_block
+                              c = '\n'.join(lines)
+                              print(f"  [{TAG}] {HOOK} inserted (fallback search) ✓")
+                              print(f"    anchored on: {anchor_line.strip()}")
+                              main_hook_ok = True
+                          break
+                  if not main_hook_ok:
+                      print(f"  [{TAG}] ❌ FATAL: no 'return do_execve(' found anywhere in file")
+                      # Dump do_execveat_common area if it exists
+                      for i, line in enumerate(lines):
+                          if 'do_execveat_common' in line:
+                              start = max(0, i - 2)
+                              end = min(len(lines), i + 30)
+                              print(f"    Context around do_execveat_common (lines {start+1}-{end}):")
+                              for j in range(start, end):
+                                  marker = ">>>" if j == i else "   "
+                                  print(f"      {marker} {j+1}: {lines[j]}")
+                              break
+
+              ok_exec = main_hook_ok
+
+              # --- compat_do_execve: search flexibly ---
+              # Found in CI: "return compat_do_execve(getname(filename), argv, envp);"
+              compat_m = re.search(r'return\s+compat_do_execve\s*\(', c)
+              if compat_m:
+                  compat_line_idx = None
+                  for i, line in enumerate(c.split('\n')):
+                      if compat_m.group() in line:
+                          compat_line_idx = i
+                          break
+                  if compat_line_idx is not None:
+                      lines = c.split('\n')
+                      anchor_line = lines[compat_line_idx].rstrip()
+                      if HOOK not in lines[max(0, compat_line_idx-5):compat_line_idx+1][0] if compat_line_idx > 0 else True:
+                          hook_block = (
+                              "#ifdef CONFIG_KSU\n"
+                              "\tksu_handle_execveat((int *)fd, &filename, &argv, &envp, flags);\n"
+                              "#endif\n"
+                              f"\t{anchor_line}"
+                          )
+                          lines[compat_line_idx] = hook_block
+                          c = '\n'.join(lines)
+                          print(f"  [{TAG}] compat hook inserted ✓")
+                          print(f"    anchored on: {anchor_line.strip()}")
 
               # --- Insert extern declarations ---
-              # Externs go before the SYSCALL_DEFINE3(execve line
               if "extern int ksu_handle_execveat" not in c:
                   extern_block = (
                       "#ifdef CONFIG_KSU\n"
@@ -343,9 +418,8 @@ jobs:
                       "#endif\n"
                   )
                   marker = "SYSCALL_DEFINE3(execve,"
-                  idx = find_line(lines, marker)
+                  idx = find_line(c.split('\n'), marker)
                   if idx is not None:
-                      # Re-split after potential replacements
                       lines = c.split('\n')
                       lines.insert(idx, extern_block)
                       c = '\n'.join(lines)
@@ -468,23 +542,38 @@ jobs:
                   results.append((TAG, HOOK, True))
               else:
                   lines = c.split('\n')
-                  marker = "SYSCALL_DEFINE3(read,"
-                  read_idx = find_line(lines, marker)
-                  if read_idx is None:
-                      print(f"  [{TAG}] ❌ FATAL: anchor not found:")
-                      show_context(c, marker)
-                      results.append((TAG, HOOK, False))
-                  else:
-                      # Find "return vfs_read" within next 60 lines
+                  # Strategy: hook inside ksys_read() BEFORE vfs_read() call.
+                  # In 4.19, SYSCALL_DEFINE3(read) is just `return ksys_read(fd, buf, count);`
+                  # The actual vfs_read is in ksys_read() function.
+
+                  # Find ksys_read function definition
+                  ksys_read_idx = None
+                  for i, line in enumerate(lines):
+                      if re.search(r'ssize_t\s+ksys_read\s*\(', line):
+                          ksys_read_idx = i
+                          break
+
+                  if ksys_read_idx is not None:
+                      print(f"  [{TAG}] Found ksys_read at line {ksys_read_idx + 1}")
+                      # Find vfs_read call within ksys_read function (next 40 lines)
                       vfs_read_idx = None
-                      for i in range(read_idx, min(read_idx + 60, len(lines))):
-                          if 'return vfs_read' in lines[i]:
+                      for i in range(ksys_read_idx, min(ksys_read_idx + 40, len(lines))):
+                          if 'vfs_read(' in lines[i] and 'ret' in lines[i]:
                               vfs_read_idx = i
                               break
 
                       if vfs_read_idx is None:
-                          print(f"  [{TAG}] ⚠ WARNING: 'return vfs_read' not found near SYSCALL_DEFINE3(read)")
-                          show_context(c, marker, 15)
+                          # Fallback: search for any vfs_read( in the function
+                          for i in range(ksys_read_idx, min(ksys_read_idx + 40, len(lines))):
+                              if 'vfs_read(' in lines[i]:
+                                  vfs_read_idx = i
+                                  break
+
+                      if vfs_read_idx is None:
+                          print(f"  [{TAG}] ⚠ WARNING: 'vfs_read(' not found inside ksys_read()")
+                          print(f"    Showing ksys_read context:")
+                          for j in range(ksys_read_idx, min(ksys_read_idx + 25, len(lines))):
+                              print(f"      {j+1}: {lines[j]}")
                           results.append((TAG, HOOK, False))
                       else:
                           hook_block = (
@@ -496,7 +585,7 @@ jobs:
                           lines.insert(vfs_read_idx, hook_block)
                           c = '\n'.join(lines)
 
-                          # Insert externs before the marker
+                          # Insert externs before ksys_read function
                           externs = (
                               "#ifdef CONFIG_KSU\n"
                               "extern bool ksu_vfs_read_hook __read_mostly;\n"
@@ -504,13 +593,32 @@ jobs:
                               "#endif"
                           )
                           lines = c.split('\n')
-                          idx = find_line(lines, marker)
-                          if idx is not None:
-                              lines.insert(idx, externs)
-                              c = '\n'.join(lines)
+                          # Re-find ksys_read_idx after insertion
+                          for i, line in enumerate(lines):
+                              if re.search(r'ssize_t\s+ksys_read\s*\(', line):
+                                  lines.insert(i, externs)
+                                  c = '\n'.join(lines)
+                                  break
 
-                          print(f"  [{TAG}] {HOOK} + ksu_vfs_read_hook inserted in SYSCALL_DEFINE3(read) ✓")
+                          print(f"  [{TAG}] {HOOK} + ksu_vfs_read_hook inserted in ksys_read() ✓")
+                          print(f"    anchored before vfs_read at line {vfs_read_idx + 1}")
                           results.append((TAG, HOOK, True))
+                  else:
+                      # Fallback: try SYSCALL_DEFINE3(read) as last resort
+                      print(f"  [{TAG}] ksys_read() not found, trying SYSCALL_DEFINE3(read) fallback")
+                      marker = "SYSCALL_DEFINE3(read,"
+                      read_idx = find_line(lines, marker)
+                      if read_idx is None:
+                          print(f"  [{TAG}] ❌ FATAL: neither ksys_read nor SYSCALL_DEFINE3(read) found")
+                          show_context(c, "ksys_read")
+                          results.append((TAG, HOOK, False))
+                      else:
+                          # In this kernel, SYSCALL_DEFINE3(read) likely just calls ksys_read
+                          # Show what's actually there
+                          print(f"    Showing SYSCALL_DEFINE3(read) context:")
+                          for j in range(read_idx, min(read_idx + 10, len(lines))):
+                              print(f"      {j+1}: {lines[j]}")
+                          results.append((TAG, HOOK, False))
 
                   write_file(TAG, c)
 
@@ -616,12 +724,14 @@ jobs:
                           show_context(c, marker, 10)
                           results.append((TAG, HOOK, False))
                       else:
+                          # Insert hook AFTER all declarations (C90 compliance)
+                          insert_at = skip_declarations(lines, brace_line + 1)
                           hook_block = (
                               "#ifdef CONFIG_KSU\n"
                               "\tksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\n"
                               "#endif"
                           )
-                          lines.insert(brace_line + 1, hook_block)
+                          lines.insert(insert_at, hook_block)
                           c = '\n'.join(lines)
 
                           extern_block = "#ifdef CONFIG_KSU\nextern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);\n#endif"
@@ -631,7 +741,8 @@ jobs:
                               lines.insert(idx, extern_block)
                               c = '\n'.join(lines)
 
-                          print(f"  [{TAG}] {HOOK} inserted ✓")
+                          print(f"  [{TAG}] {HOOK} inserted after declarations (C90 OK) ✓")
+                          print(f"    opened at line {brace_line+1}, hook at line {insert_at+1}")
                           results.append((TAG, HOOK, True))
 
                   write_file(TAG, c)
