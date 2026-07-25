@@ -73,14 +73,15 @@ jobs:
           get_manager_artifacts() {
             local artifacts="$1"
             printf '%s' "$artifacts" | jq -r \
-              '.artifacts[] | select(.name == "Manager-release" or .name == "Manager" or .name == "Spoofed-Manager-release") | "\(.name)\t\(.archive_download_url)"'
+              '.artifacts[] | select(.name == "manager" or .name == "manager-spoofed") | "\(.name)\t\(.archive_download_url)"'
           }
 
           DOWNLOAD_LIST=""
           BEST_VERSION=0
           BEST_BUILD_ID=""
           BEST_BRANCH=""
-          RUNS_URL="https://api.github.com/repos/$REPO/actions/workflows/$FILENAME/runs?status=success&per_page=30"
+          # Filter for push events only — PR runs don't upload manager artifacts
+          RUNS_URL="https://api.github.com/repos/$REPO/actions/workflows/$FILENAME/runs?status=success&event=push&per_page=30"
 
           echo "Looking for Manager with KSU <= $TARGET_KSU_VERSION..."
           for PAGE in $(seq 1 10); do
@@ -94,20 +95,21 @@ jobs:
               BUILD_ID=$(printf '%s' "$RUNS" | jq -r ".workflow_runs[$INDEX].id")
               HEAD_SHA=$(printf '%s' "$RUNS" | jq -r ".workflow_runs[$INDEX].head_sha")
               HEAD_BRANCH=$(printf '%s' "$RUNS" | jq -r ".workflow_runs[$INDEX].head_branch")
+              RUN_EVENT=$(printf '%s' "$RUNS" | jq -r ".workflow_runs[$INDEX].event")
               RUN_KSU_VERSION=$(calculate_run_ksu_version "$HEAD_SHA" || true)
               if ! [[ "$RUN_KSU_VERSION" =~ ^[0-9]+$ ]]; then
                 echo "Skip build $BUILD_ID: cannot calculate KSU version from $HEAD_SHA"
                 continue
               fi
               if [ "$RUN_KSU_VERSION" -gt "$TARGET_KSU_VERSION" ]; then
-                echo "Skip build $BUILD_ID ($HEAD_BRANCH): Manager KSU $RUN_KSU_VERSION > kernel KSU $TARGET_KSU_VERSION"
+                echo "Skip build $BUILD_ID ($HEAD_BRANCH/$RUN_EVENT): Manager KSU $RUN_KSU_VERSION > kernel KSU $TARGET_KSU_VERSION"
                 continue
               fi
               ARTIFACTS=$(curl -s -H "Authorization: token $GH_TOKEN" \
                 "https://api.github.com/repos/$REPO/actions/runs/$BUILD_ID/artifacts")
               CANDIDATE_LIST=$(get_manager_artifacts "$ARTIFACTS")
               if [ -z "$CANDIDATE_LIST" ]; then
-                echo "Skip build $BUILD_ID ($HEAD_BRANCH): no Manager artifacts found"
+                echo "Skip build $BUILD_ID ($HEAD_BRANCH/$RUN_EVENT): no Manager artifacts found"
                 continue
               fi
               if [ -z "$DOWNLOAD_LIST" ] || [ "$RUN_KSU_VERSION" -gt "$BEST_VERSION" ]; then
@@ -130,6 +132,7 @@ jobs:
 
           echo "Selected Manager build $BEST_BUILD_ID ($BEST_BRANCH), KSU $BEST_VERSION"
 
+          mkdir -p manager-artifacts
           echo "$DOWNLOAD_LIST" | while IFS=$'\t' read -r NAME URL; do
             SAFE_NAME=$(echo "$NAME" | tr '/ ' '__')
             ZIP_NAME="KernelSU-Next-${SAFE_NAME}(${{ env.KSU_VERSION }}).zip"
@@ -140,20 +143,7 @@ jobs:
             rm -rf "$ZIP_NAME"
           done
 
-          # Keep only release APKs, drop debug
-          echo "Keeping only release APKs..."
-          find manager-artifacts -type f -name "*debug*.apk" -delete
-
-          if find manager-artifacts -type f -name "*-universal-release.apk" | grep -q .; then
-            echo "Found universal release APK"
-            find manager-artifacts -type f -name "*.apk" ! -name "*-universal-release.apk" -delete
-          elif find manager-artifacts -type f -name "*-release.apk" | grep -q .; then
-            echo "No universal APK found, keeping per-ABI release APKs"
-            find manager-artifacts -type f -name "*.apk" ! -name "*-release.apk" -delete
-          else
-            echo "No release Manager APK found"
-            exit 1
-          fi
+          # The artifact zips contain the APK directly
           find manager-artifacts -type f -name "*.apk" -print
 
       - name: Add SUSFS module

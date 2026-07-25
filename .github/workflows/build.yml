@@ -168,7 +168,8 @@ jobs:
           susfs_menu = open('/tmp/susfs_menu.kconfig').read()
           stripped = content.rstrip()
           if stripped.endswith('endmenu'):
-              content = stripped[:-7] + susfs_menu + '\n'
+              # Keep the original endmenu (closes KernelSU menu), insert SUSFS before it
+              content = stripped[:-7] + susfs_menu + '\nendmenu\n'
           else:
               content += susfs_menu
           with open(kconfig_path, 'w') as f:
