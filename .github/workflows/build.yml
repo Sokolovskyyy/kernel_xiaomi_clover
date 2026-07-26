@@ -1106,7 +1106,7 @@ jobs:
                   if line.startswith('#include'):
                       last_include = i
               fwd = (
-                  '#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n'
+                  '#ifdef CONFIG_KSU\n'
                   'int can_umount(const struct path *path, int flags);\n'
                   '#endif'
               )
