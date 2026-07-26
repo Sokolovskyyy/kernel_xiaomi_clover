@@ -2,10 +2,18 @@
 """
 Inject minimum SUSFS safety implementations into KernelSU-Next source tree.
 
-Functions (susfs_is_current_ksu_domain, susfs_set_ksu_sid, susfs_set_priv_app_sid)
-are static inline in selinux.h so the compiler inlines them at each call site.
-Variables (susfs_ksu_sid, susfs_priv_app_sid) are defined once in selinux.c,
-declared extern in selinux.h.
+Architecture:
+  - susfs_is_current_ksu_domain() is a NON-static function in selinux/selinux.c
+    because callers in fs/namespace.c and fs/susfs.c include <linux/susfs_def.h>
+    (which has extern declaration) but NOT drivers/kernelsu/selinux/selinux.h.
+    A static inline in selinux.h would be invisible to those callers → linker error.
+  - susfs_ksu_sid / susfs_priv_app_sid are variable definitions in selinux.c,
+    declared extern in selinux/selinux.h (for KSU driver code) and implicitly
+    via susfs_def.h extern for other callers.
+  - susfs_set_ksu_sid_from_ctx / susfs_set_priv_app_sid_from_ctx are only called
+    from rules.c (inside KSU driver), so they can be static inline in selinux.h.
+  - ksu_handle_devpts() is called by the original AlcatrazDev pty.c hook but has
+    no implementation — provide a no-op stub.
 
 Usage:
   KSU_DIR=drivers/kernelsu python3 inject_susfs_safety.py
@@ -30,7 +38,7 @@ def append_file(p, c):
         f.write(c)
 
 
-# ── 1. selinux/selinux.h — static inline implementations + extern vars ──
+# ── 1. selinux/selinux.h — static inline setters + extern vars ──────────
 path = os.path.join(KSU, "selinux", "selinux.h")
 src = read_file(path)
 
@@ -39,15 +47,10 @@ if "susfs_is_current_ksu_domain" in src:
 else:
     block = """
 #ifdef CONFIG_KSU_SUSFS
-#include <linux/security.h>
 
 extern u32 susfs_ksu_sid;
 extern u32 susfs_priv_app_sid;
-
-static inline bool susfs_is_current_ksu_domain(void)
-{
-\treturn unlikely(current_sid() == susfs_ksu_sid);
-}
+bool susfs_is_current_ksu_domain(void);
 
 static inline void susfs_set_ksu_sid_from_ctx(const char *secctx_name)
 {
@@ -77,26 +80,43 @@ static inline void susfs_set_priv_app_sid_from_ctx(const char *secctx_name)
     if idx >= 0:
         new_src = src[:idx] + block + "\n" + src[idx:]
         write_file(path, new_src)
-        print(f"{path}: added SUSFS static inline implementations")
+        print(f"{path}: added SUSFS declarations + static inline setters")
     else:
         append_file(path, block)
-        print(f"{path}: appended SUSFS implementations (fallback)")
+        print(f"{path}: appended SUSFS declarations (fallback)")
 
-# ── 2. selinux/selinux.c — variable definitions only ────────────────────
+# ── 2. selinux/selinux.c — variable definitions + non-inline function ──
 path = os.path.join(KSU, "selinux", "selinux.c")
 src = read_file(path)
 
 if "susfs_ksu_sid" in src:
-    print(f"{path}: SUSFS variable definitions already present - skipping")
+    print(f"{path}: SUSFS symbols already present - skipping")
 else:
-    var_block = """
+    code = """
 #ifdef CONFIG_KSU_SUSFS
+#include <linux/security.h>
+
 u32 susfs_ksu_sid __read_mostly = 0;
 u32 susfs_priv_app_sid __read_mostly = 0;
+
+bool susfs_is_current_ksu_domain(void)
+{
+\treturn unlikely(current_sid() == susfs_ksu_sid);
+}
+
+/*
+ * Stub for ksu_handle_devpts() — called from drivers/tty/pty.c
+ * (pts_unix98_lookup) in AlcatrazDev kernel source but was never
+ * implemented. Provide no-op to satisfy the linker.
+ */
+int ksu_handle_devpts(struct inode *inode)
+{
+\treturn 0;
+}
 #endif /* CONFIG_KSU_SUSFS */
 """
-    append_file(path, var_block)
-    print(f"{path}: appended SUSFS variable definitions")
+    append_file(path, code)
+    print(f"{path}: appended SUSFS variables + susfs_is_current_ksu_domain()")
 
 # ── 3. selinux/rules.c — add SID setup calls ──────────────────────────
 path = os.path.join(KSU, "selinux", "rules.c")
