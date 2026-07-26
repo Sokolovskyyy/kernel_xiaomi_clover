@@ -1073,28 +1073,22 @@ jobs:
           import re
           with open('fs/namespace.c') as f:
               s = f.read()
-          lines = s.split('\n')
-          # KSU build-time hooks inject 'static int can_umount(...)' into namespace.c
-          # AFTER compilation starts, but the kernel already has 'static inline int
-          # can_umount()' which conflicts. Strip the original so KSU's version wins.
-          # We also need a forward declaration before the call site.
-          for i, line in enumerate(lines):
-              if re.match(r'\s*static inline int can_umount\s*\(', line):
-                  # Find end of function
-                  brace_count = 0
-                  end = i
-                  for j in range(i, len(lines)):
-                      brace_count += lines[j].count('{') - lines[j].count('}')
-                      if brace_count == 0 and '{' in ''.join(lines[i:j+1]):
-                          end = j
-                          break
-                  # Replace with forward declaration only
-                  lines[i] = 'static int can_umount(const struct path *path, int flags);'
-                  del lines[i+1:end+1]
-                  print(f'Replaced inline can_umount (lines {i+1}-{end+1}) with forward declaration')
-                  break
-          with open('fs/namespace.c', 'w') as f:
-              f.write('\n'.join(lines))
+          # KSU build-time hook injects 'static int can_umount(...)' but kernel
+          # has 'static inline int can_umount(...)' causing redefinition.
+          # Strip 'inline' so it matches KSU's expected signature exactly —
+          # KSU will see it exists and skip injection.
+          new_s, count = re.subn(
+              r'(static\s+)inline(\s+int\s+can_umount\s*\()',
+              r'\1\2',
+              s,
+              count=1
+          )
+          if count:
+              with open('fs/namespace.c', 'w') as f:
+                  f.write(new_s)
+              print('Stripped inline from can_umount — KSU should skip injection')
+          else:
+              print('WARNING: static inline can_umount not found (may already be patched)')
           "
 
       - name: Build kernel
