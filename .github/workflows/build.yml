@@ -1138,6 +1138,12 @@ jobs:
               print('can_umount signature already matches (no inline) or not found')
           "
 
+      - name: Inject SUSFS ioctl dispatch into KernelSU-Next
+        working-directory: kernel
+        run: |
+          curl -LSs "https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/.github/scripts/inject_susfs_dispatch.py" -o /tmp/inject_susfs_dispatch.py
+          KSU_DIR="drivers/kernelsu" python3 /tmp/inject_susfs_dispatch.py
+
       - name: Build kernel
         working-directory: kernel
         run: |
