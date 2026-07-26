@@ -1066,6 +1066,34 @@ jobs:
           echo "=== CONFIG_KSU lines in out/.config (after alldefconfig) ==="
           grep -E "^CONFIG_KSU" out/.config || echo "no CONFIG_KSU lines found"
 
+      - name: Strip kernel's own can_umount to avoid KSU build-time conflict
+        working-directory: kernel
+        run: |
+          python3 -c "
+          import re
+          with open('fs/namespace.c') as f:
+              lines = f.read().split('\n')
+          found = False
+          for i, line in enumerate(lines):
+              if re.match(r'\s*static inline int can_umount\s*\(', line):
+                  start = i
+                  brace_count = 0
+                  end = i
+                  for j in range(i, len(lines)):
+                      brace_count += lines[j].count('{') - lines[j].count('}')
+                      if brace_count == 0 and '{' in ''.join(lines[i:j+1]):
+                          end = j
+                          break
+                  print(f'Removing original can_umount at lines {start+1}-{end+1}')
+                  del lines[start:end+1]
+                  found = True
+                  break
+          if not found:
+              print('No static inline can_umount found — KSU will provide its own')
+          with open('fs/namespace.c', 'w') as f:
+              f.write('\n'.join(lines))
+          "
+
       - name: Build kernel
         working-directory: kernel
         run: |
