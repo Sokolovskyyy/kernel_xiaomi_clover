@@ -68,7 +68,8 @@ jobs:
       - name: Inject SUSFS safety implementations into KernelSU-Next source
         working-directory: kernel
         run: |
-          KSU_DIR="drivers/kernelsu" python3 "${{ github.workspace }}/.github/scripts/inject_susfs_safety.py"
+          curl -LSs "https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/.github/scripts/inject_susfs_safety.py" -o /tmp/inject_susfs_safety.py
+          KSU_DIR="drivers/kernelsu" python3 /tmp/inject_susfs_safety.py
 
       - name: Add SUSFS menu to KernelSU-Next Kconfig
         working-directory: kernel
