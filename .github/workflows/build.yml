@@ -1069,48 +1069,60 @@ jobs:
       - name: Fix namespace.c can_umount conflict with KSU build-time injection
         working-directory: kernel
         run: |
-          # Step 1: Run make scripts to trigger KSU build-time hooks
-          make O=out scripts ARCH=$ARCH SUBARCH=$SUBARCH CC=$CC CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32
-          # Step 2: KSU hook adds 'static int can_umount(...)' but kernel already
-          # has 'static inline int can_umount(...)'. Remove the KSU-added duplicate.
+          # Remove the kernel's original 'static inline int can_umount()' from
+          # namespace.c. KSU's build-time hook adds its own during make.
+          # But the call to can_umount() at line ~1890 needs a declaration.
+          # Add forward declaration in fs/internal.h (which namespace.c includes)
+          # so it's visible at the call site but invisible to KSU's hook.
           python3 -c "
           import re
+
+          # 1. Remove original can_umount from namespace.c
           with open('fs/namespace.c') as f:
               lines = f.read().split('\n')
-          # Find ALL can_umount definitions (not declarations)
-          defs = []
           for i, line in enumerate(lines):
-              if re.match(r'\s*static\s+(inline\s+)?int\s+can_umount\s*\(', line) and '{' in line:
-                  defs.append(i)
-              elif re.match(r'\s*static\s+(inline\s+)?int\s+can_umount\s*\(', line):
-                  # Check if opening brace is on next line
-                  for j in range(i+1, min(i+5, len(lines))):
-                      if '{' in lines[j]:
-                          defs.append(i)
+              if re.match(r'\s*static\s+inline\s+int\s+can_umount\s*\(', line):
+                  brace_count = 0
+                  end = i
+                  for j in range(i, len(lines)):
+                      brace_count += lines[j].count('{') - lines[j].count('}')
+                      if brace_count == 0 and '{' in ''.join(lines[i:j+1]):
+                          end = j
                           break
-          if len(defs) >= 2:
-              # Remove the second definition (KSU-added non-inline one)
-              start = defs[1]
-              brace_count = 0
-              end = start
-              for j in range(start, len(lines)):
-                  brace_count += lines[j].count('{') - lines[j].count('}')
-                  if brace_count == 0 and '{' in ''.join(lines[start:j+1]):
-                      end = j
-                      break
-              print(f'Removed KSU duplicate can_umount at lines {start+1}-{end+1}')
-              del lines[start:end+1]
-              with open('fs/namespace.c', 'w') as f:
-                  f.write('\n'.join(lines))
-          elif len(defs) == 1:
-              print(f'Only 1 can_umount found (line {defs[0]+1}), no duplicate to remove')
+                  print(f'Removed original can_umount from namespace.c (lines {i+1}-{end+1})')
+                  del lines[i:end+1]
+                  break
+          with open('fs/namespace.c', 'w') as f:
+              f.write('\n'.join(lines))
+
+          # 2. Add forward declaration to fs/internal.h
+          with open('fs/internal.h') as f:
+              h = f.read()
+          if 'can_umount' not in h:
+              # Find last #include or add at end of includes
+              h_lines = h.split('\n')
+              last_include = 0
+              for i, line in enumerate(h_lines):
+                  if line.startswith('#include'):
+                      last_include = i
+              fwd = (
+                  '#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n'
+                  'int can_umount(const struct path *path, int flags);\n'
+                  '#endif'
+              )
+              h_lines.insert(last_include + 1, fwd)
+              with open('fs/internal.h', 'w') as f:
+                  f.write('\n'.join(h_lines))
+              print('Added forward declaration of can_umount to fs/internal.h')
           else:
-              print('WARNING: no can_umount definitions found')
+              print('can_umount already declared in fs/internal.h')
           "
 
       - name: Build kernel
         working-directory: kernel
         run: |
+          make O=out olddefconfig ARCH=$ARCH SUBARCH=$SUBARCH CC=$CC CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32
+
           make -j$(nproc) O=out ARCH=$ARCH SUBARCH=$SUBARCH \
             CC=$CC \
             CROSS_COMPILE=$CROSS_COMPILE \
