@@ -1069,53 +1069,28 @@ jobs:
       - name: Fix namespace.c can_umount conflict with KSU build-time injection
         working-directory: kernel
         run: |
-          # Remove the kernel's original 'static inline int can_umount()' from
-          # namespace.c. KSU's build-time hook adds its own during make.
-          # But the call to can_umount() at line ~1890 needs a declaration.
-          # Add forward declaration in fs/internal.h (which namespace.c includes)
-          # so it's visible at the call site but invisible to KSU's hook.
+          # KSU-Next and SUSFS Makefile hooks both inject can_umount() into
+          # namespace.c at build time if `grep -Eq "^static int can_umount"`
+          # fails. Our kernel has `static inline int can_umount` — the `inline`
+          # keyword makes the grep fail, causing a duplicate definition error.
+          # Fix: strip `inline` from the original so the Makefile grep matches
+          # and both hooks skip injection.
           python3 -c "
           import re
-
-          # 1. Remove original can_umount from namespace.c
-          with open('fs/namespace.c') as f:
-              lines = f.read().split('\n')
-          for i, line in enumerate(lines):
-              if re.match(r'\s*static\s+inline\s+int\s+can_umount\s*\(', line):
-                  brace_count = 0
-                  end = i
-                  for j in range(i, len(lines)):
-                      brace_count += lines[j].count('{') - lines[j].count('}')
-                      if brace_count == 0 and '{' in ''.join(lines[i:j+1]):
-                          end = j
-                          break
-                  print(f'Removed original can_umount from namespace.c (lines {i+1}-{end+1})')
-                  del lines[i:end+1]
-                  break
-          with open('fs/namespace.c', 'w') as f:
-              f.write('\n'.join(lines))
-
-          # 2. Add forward declaration to fs/internal.h
-          with open('fs/internal.h') as f:
-              h = f.read()
-          if 'can_umount' not in h:
-              # Find last #include or add at end of includes
-              h_lines = h.split('\n')
-              last_include = 0
-              for i, line in enumerate(h_lines):
-                  if line.startswith('#include'):
-                      last_include = i
-              fwd = (
-                  '#ifdef CONFIG_KSU\n'
-                  'int can_umount(const struct path *path, int flags);\n'
-                  '#endif'
-              )
-              h_lines.insert(last_include + 1, fwd)
-              with open('fs/internal.h', 'w') as f:
-                  f.write('\n'.join(h_lines))
-              print('Added forward declaration of can_umount to fs/internal.h')
+          with open('fs/namespace.c', 'r') as f:
+              s = f.read()
+          new_s = re.sub(
+              r'(static\s+)inline(\s+int\s+can_umount\s*\()',
+              r'\1\2',
+              s,
+              count=1
+          )
+          if new_s != s:
+              with open('fs/namespace.c', 'w') as f:
+                  f.write(new_s)
+              print('Stripped inline from can_umount in namespace.c — Makefile hooks will now skip injection')
           else:
-              print('can_umount already declared in fs/internal.h')
+              print('can_umount signature already matches (no inline) or not found')
           "
 
       - name: Build kernel
