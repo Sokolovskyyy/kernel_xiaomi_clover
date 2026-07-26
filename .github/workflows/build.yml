@@ -785,6 +785,43 @@ jobs:
         run: |
           curl -LSs -o susfs.patch "https://raw.githubusercontent.com/JackA1ltman/NonGKI_Kernel_Build_2nd/mainline/Patches/Patch/susfs_patch_to_4.19.patch"
           patch -p1 --fuzz=3 < susfs.patch || true
+          # SUSFS patch adds a can_umount() that conflicts with the existing
+          # static inline can_umount() already present in kernel 4.19.325.
+          # Remove the SUSFS-added duplicate (the one after the inline version).
+          python3 -c "
+          with open('fs/namespace.c') as f:
+              content = f.read()
+          # Find all definitions of can_umount
+          import re
+          defs = [(m.start(), m.group()) for m in re.finditer(r'static\s+(inline\s+)?int\s+can_umount\s*\(', content)]
+          if len(defs) >= 2:
+              # Remove the second definition (SUSFS-added non-inline one)
+              # and its closing brace by finding the range
+              lines = content.split('\n')
+              # Find line indices of all can_umount definitions
+              def_lines = []
+              for i, line in enumerate(lines):
+                  if re.search(r'static\s+(inline\s+)?int\s+can_umount\s*\(', line):
+                      def_lines.append(i)
+              if len(def_lines) >= 2:
+                  # Remove the second can_umount and its body
+                  start = def_lines[1]
+                  # Find matching closing brace
+                  brace_count = 0
+                  end = start
+                  for i in range(start, len(lines)):
+                      brace_count += lines[i].count('{') - lines[i].count('}')
+                      if brace_count == 0 and '{' in ''.join(lines[start:i+1]):
+                          end = i
+                          break
+                  removed = lines[start:end+1]
+                  print(f'Removed duplicate can_umount at lines {start+1}-{end+1}')
+                  del lines[start:end+1]
+                  with open('fs/namespace.c', 'w') as f:
+                      f.write('\n'.join(lines))
+          else:
+              print(f'Found {len(defs)} can_umount definitions, no duplicate to remove')
+          "
 
       - name: Fix rejected SUSFS hunks manually
         working-directory: kernel
