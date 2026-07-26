@@ -1084,12 +1084,15 @@ jobs:
                       if brace_count == 0 and '{' in ''.join(lines[i:j+1]):
                           end = j
                           break
-                  print(f'Removing original can_umount at lines {start+1}-{end+1}')
-                  del lines[start:end+1]
+                  orig = '\n'.join(lines[start:end+1])
+                  lines[start] = '#ifndef CONFIG_KSU'
+                  lines.insert(start + 1, orig)
+                  lines.insert(end + 2, '#endif')
+                  print(f'Wrapped original can_umount (lines {start+1}-{end+1}) in #ifndef CONFIG_KSU')
                   found = True
                   break
           if not found:
-              print('No static inline can_umount found — KSU will provide its own')
+              print('No static inline can_umount found')
           with open('fs/namespace.c', 'w') as f:
               f.write('\n'.join(lines))
           "
