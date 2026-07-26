@@ -1079,16 +1079,18 @@ jobs:
           import re
           with open('fs/namespace.c', 'r') as f:
               s = f.read()
+          # Replace 'static inline int can_umount(' with 'static int can_umount('
+          # Using a single-space replacement so grep '^static int can_umount' matches
           new_s = re.sub(
-              r'(static\s+)inline(\s+int\s+can_umount\s*\()',
-              r'\1\2',
+              r'static\s+inline\s+int\s+can_umount\s*\(',
+              'static int can_umount(',
               s,
               count=1
           )
           if new_s != s:
               with open('fs/namespace.c', 'w') as f:
                   f.write(new_s)
-              print('Stripped inline from can_umount in namespace.c — Makefile hooks will now skip injection')
+              print('Stripped inline from can_umount in namespace.c -> \"static int can_umount(\"')
           else:
               print('can_umount signature already matches (no inline) or not found')
           "
