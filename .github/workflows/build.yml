@@ -327,7 +327,7 @@ jobs:
                           anchor_line = lines[i].rstrip()
                           hook_block = (
                               "#ifdef CONFIG_KSU\n"
-                              "\tksu_handle_execveat((int *)fd, &filename, &argv, &envp, flags);\n"
+                              "\tksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\n"
                               "#endif\n"
                               f"\t{anchor_line}"
                           )
@@ -353,7 +353,7 @@ jobs:
                           anchor_line = line.rstrip()
                           hook_block = (
                               "#ifdef CONFIG_KSU\n"
-                              "\tksu_handle_execveat((int *)fd, &filename, &argv, &envp, flags);\n"
+                              "\tksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\n"
                               "#endif\n"
                               f"\t{anchor_line}"
                           )
@@ -381,6 +381,7 @@ jobs:
 
               # --- compat_do_execve: search flexibly ---
               # Found in CI: "return compat_do_execve(getname(filename), argv, envp);"
+              # NOTE: compat_do_execve has NO fd or flags params — pass NULL
               compat_m = re.search(r'return\s+compat_do_execve\s*\(', c)
               if compat_m:
                   compat_line_idx = None
@@ -394,7 +395,7 @@ jobs:
                       if HOOK not in lines[max(0, compat_line_idx-5):compat_line_idx+1][0] if compat_line_idx > 0 else True:
                           hook_block = (
                               "#ifdef CONFIG_KSU\n"
-                              "\tksu_handle_execveat((int *)fd, &filename, &argv, &envp, flags);\n"
+                              "\tksu_handle_execveat(NULL, &filename, &argv, &envp, NULL);\n"
                               "#endif\n"
                               f"\t{anchor_line}"
                           )
@@ -404,21 +405,28 @@ jobs:
                           print(f"    anchored on: {anchor_line.strip()}")
 
               # --- Insert extern declarations ---
+              # Place at top of file after last #include, NOT before
+              # SYSCALL_DEFINE3(execve) which may come AFTER do_execveat_common
               if "extern int ksu_handle_execveat" not in c:
                   extern_block = (
                       "#ifdef CONFIG_KSU\n"
                       "extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);\n"
                       "#endif\n"
                   )
-                  marker = "SYSCALL_DEFINE3(execve,"
-                  idx = find_line(c.split('\n'), marker)
-                  if idx is not None:
-                      lines = c.split('\n')
-                      lines.insert(idx, extern_block)
+                  lines = c.split('\n')
+                  last_include_idx = None
+                  for i, line in enumerate(lines):
+                      if line.startswith('#include '):
+                          last_include_idx = i
+                      # Stop at first function definition
+                      if re.match(r'^(static\s+|long\s+|int\s+|void\s+|ssize_t\s+)', line.strip()) and i > 10:
+                          break
+                  if last_include_idx is not None:
+                      lines.insert(last_include_idx + 1, extern_block)
                       c = '\n'.join(lines)
-                      print(f"  [{TAG}] Inserted extern declaration ✓")
+                      print(f"  [{TAG}] Inserted extern declaration after includes ✓")
                   else:
-                      print(f"  [{TAG}] ⚠ WARNING: SYSCALL_DEFINE3(execve not found for extern placement")
+                      print(f"  [{TAG}] ⚠ WARNING: could not find #include section for extern placement")
 
               write_file(TAG, c)
               results.append((TAG, HOOK, ok_exec))
