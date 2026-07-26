@@ -1066,17 +1066,21 @@ jobs:
           echo "=== CONFIG_KSU lines in out/.config (after alldefconfig) ==="
           grep -E "^CONFIG_KSU" out/.config || echo "no CONFIG_KSU lines found"
 
-      - name: Strip kernel's own can_umount to avoid KSU build-time conflict
+      - name: Fix namespace.c can_umount conflict with KSU build-time injection
         working-directory: kernel
         run: |
           python3 -c "
           import re
           with open('fs/namespace.c') as f:
-              lines = f.read().split('\n')
-          found = False
+              s = f.read()
+          lines = s.split('\n')
+          # KSU build-time hooks inject 'static int can_umount(...)' into namespace.c
+          # AFTER compilation starts, but the kernel already has 'static inline int
+          # can_umount()' which conflicts. Strip the original so KSU's version wins.
+          # We also need a forward declaration before the call site.
           for i, line in enumerate(lines):
               if re.match(r'\s*static inline int can_umount\s*\(', line):
-                  start = i
+                  # Find end of function
                   brace_count = 0
                   end = i
                   for j in range(i, len(lines)):
@@ -1084,15 +1088,11 @@ jobs:
                       if brace_count == 0 and '{' in ''.join(lines[i:j+1]):
                           end = j
                           break
-                  orig = '\n'.join(lines[start:end+1])
-                  lines[start] = '#ifndef CONFIG_KSU'
-                  lines.insert(start + 1, orig)
-                  lines.insert(end + 2, '#endif')
-                  print(f'Wrapped original can_umount (lines {start+1}-{end+1}) in #ifndef CONFIG_KSU')
-                  found = True
+                  # Replace with forward declaration only
+                  lines[i] = 'static int can_umount(const struct path *path, int flags);'
+                  del lines[i+1:end+1]
+                  print(f'Replaced inline can_umount (lines {i+1}-{end+1}) with forward declaration')
                   break
-          if not found:
-              print('No static inline can_umount found')
           with open('fs/namespace.c', 'w') as f:
               f.write('\n'.join(lines))
           "
