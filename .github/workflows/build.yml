@@ -1069,33 +1069,48 @@ jobs:
       - name: Fix namespace.c can_umount conflict with KSU build-time injection
         working-directory: kernel
         run: |
+          # Step 1: Run make scripts to trigger KSU build-time hooks
+          make O=out scripts ARCH=$ARCH SUBARCH=$SUBARCH CC=$CC CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32
+          # Step 2: KSU hook adds 'static int can_umount(...)' but kernel already
+          # has 'static inline int can_umount(...)'. Remove the KSU-added duplicate.
           python3 -c "
           import re
           with open('fs/namespace.c') as f:
-              s = f.read()
-          # KSU build-time hook injects 'static int can_umount(...)' but kernel
-          # has 'static inline int can_umount(...)' causing redefinition.
-          # Strip 'inline' so it matches KSU's expected signature exactly —
-          # KSU will see it exists and skip injection.
-          new_s, count = re.subn(
-              r'(static\s+)inline(\s+int\s+can_umount\s*\()',
-              r'\1\2',
-              s,
-              count=1
-          )
-          if count:
+              lines = f.read().split('\n')
+          # Find ALL can_umount definitions (not declarations)
+          defs = []
+          for i, line in enumerate(lines):
+              if re.match(r'\s*static\s+(inline\s+)?int\s+can_umount\s*\(', line) and '{' in line:
+                  defs.append(i)
+              elif re.match(r'\s*static\s+(inline\s+)?int\s+can_umount\s*\(', line):
+                  # Check if opening brace is on next line
+                  for j in range(i+1, min(i+5, len(lines))):
+                      if '{' in lines[j]:
+                          defs.append(i)
+                          break
+          if len(defs) >= 2:
+              # Remove the second definition (KSU-added non-inline one)
+              start = defs[1]
+              brace_count = 0
+              end = start
+              for j in range(start, len(lines)):
+                  brace_count += lines[j].count('{') - lines[j].count('}')
+                  if brace_count == 0 and '{' in ''.join(lines[start:j+1]):
+                      end = j
+                      break
+              print(f'Removed KSU duplicate can_umount at lines {start+1}-{end+1}')
+              del lines[start:end+1]
               with open('fs/namespace.c', 'w') as f:
-                  f.write(new_s)
-              print('Stripped inline from can_umount — KSU should skip injection')
+                  f.write('\n'.join(lines))
+          elif len(defs) == 1:
+              print(f'Only 1 can_umount found (line {defs[0]+1}), no duplicate to remove')
           else:
-              print('WARNING: static inline can_umount not found (may already be patched)')
+              print('WARNING: no can_umount definitions found')
           "
 
       - name: Build kernel
         working-directory: kernel
         run: |
-          make O=out olddefconfig ARCH=$ARCH SUBARCH=$SUBARCH CC=$CC CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32
-
           make -j$(nproc) O=out ARCH=$ARCH SUBARCH=$SUBARCH \
             CC=$CC \
             CROSS_COMPILE=$CROSS_COMPILE \
