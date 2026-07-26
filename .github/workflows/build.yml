@@ -395,7 +395,7 @@ jobs:
                       if HOOK not in lines[max(0, compat_line_idx-5):compat_line_idx+1][0] if compat_line_idx > 0 else True:
                           hook_block = (
                               "#ifdef CONFIG_KSU\n"
-                              "\tksu_handle_execveat(NULL, &filename, &argv, &envp, NULL);\n"
+                              "\tksu_handle_execveat(NULL, NULL, &argv, &envp, NULL);\n"
                               "#endif\n"
                               f"\t{anchor_line}"
                           )
