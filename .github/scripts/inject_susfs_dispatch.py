@@ -48,7 +48,7 @@ else:
     # ── 1a. Insert handle_susfs_ioctl() function BEFORE ksu_supercall_handle_ioctl ──
     susfs_handler = r"""
 #ifdef CONFIG_KSU_SUSFS
-#include <linux/susfs_def.h>
+#include <linux/susfs.h>
 
 static int handle_susfs_ioctl(unsigned int cmd, void __user *argp)
 {
