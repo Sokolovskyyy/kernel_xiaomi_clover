@@ -3,8 +3,13 @@ name: Build Clover Kernel
 on:
   workflow_dispatch:
     inputs:
-      local_version:
-        description: 'Custom local version suffix (e.g. -ksunext-test1). Leave empty for default.'
+      kernel_version:
+        description: 'Full kernel version override (e.g. 4.19.325). Leave empty for default from Makefile.'
+        required: false
+        default: ''
+        type: string
+      kernel_localversion:
+        description: 'Localversion suffix (e.g. -resuki-susfs-v1). Leave empty for default.'
         required: false
         default: ''
         type: string
@@ -35,6 +40,31 @@ jobs:
           repository: AlcatrazDev-Android-Devices/kernel_xiaomi_clover
           ref: lineage-23.1
           path: kernel
+
+      - name: Override kernel version (if provided)
+        working-directory: kernel
+        run: |
+          if [ -n "${{ inputs.kernel_version }}" ]; then
+            IFS='.' read -r V P S EXTRA <<< "${{ inputs.kernel_version }}"
+            echo "Overriding kernel version: $V.$P.$S${EXTRA:+.$EXTRA}"
+            sed -i "s/^VERSION = .*/VERSION = $V/" Makefile
+            sed -i "s/^PATCHLEVEL = .*/PATCHLEVEL = $P/" Makefile
+            sed -i "s/^SUBLEVEL = .*/SUBLEVEL = $S/" Makefile
+            if [ -n "$EXTRA" ]; then
+              sed -i "s/^EXTRAVERSION = .*/EXTRAVERSION = .$EXTRA/" Makefile
+            else
+              sed -i "s/^EXTRAVERSION = .*/EXTRAVERSION =/" Makefile
+            fi
+            echo "=== Verifying Makefile version ==="
+            head -10 Makefile
+          else
+            echo "No kernel_version input — keeping default from Makefile"
+          fi
+
+          # Always suppress git hash/dirty suffix by creating .scmversion
+          # scripts/setlocalversion uses this file instead of querying git
+          touch .scmversion
+          echo "Created .scmversion (empty — suppresses git hash/dirty)"
 
       - name: Install dependencies
         run: |
@@ -1018,12 +1048,15 @@ jobs:
             "CONFIG_KSU=y" \
             "CONFIG_KSU_MANUAL_HOOK=y" > /tmp/ksu_susfs.config
 
-          # Add custom local version if provided
-          if [ -n "${{ inputs.local_version }}" ]; then
-            echo "CONFIG_LOCALVERSION=\"${{ inputs.local_version }}\"" >> /tmp/ksu_susfs.config
-            echo "# CONFIG_LOCALVERSION_AUTO is not set" >> /tmp/ksu_susfs.config
-            echo "Custom local version: ${{ inputs.local_version }}"
+          # Add custom local version if provided, otherwise keep default
+          if [ -n "${{ inputs.kernel_localversion }}" ]; then
+            echo "CONFIG_LOCALVERSION=\"${{ inputs.kernel_localversion }}\"" >> /tmp/ksu_susfs.config
+            echo "Custom local version: ${{ inputs.kernel_localversion }}"
           fi
+
+          # Always disable LOCALVERSION_AUTO to prevent git-hash/dirty suffix
+          # (.scmversion already handles this, but belt-and-suspenders)
+          echo "# CONFIG_LOCALVERSION_AUTO is not set" >> /tmp/ksu_susfs.config
 
           # SUSFS options (always enabled)
           printf "%s\n" \
@@ -1116,6 +1149,18 @@ jobs:
         run: |
           echo "=== Final CONFIG_KSU lines ==="
           grep -E "^CONFIG_KSU|^# CONFIG_KSU" out/.config || echo "no CONFIG_KSU lines found"
+
+          echo ""
+          echo "=== Kernel version in .config ==="
+          grep -E "^CONFIG_LOCALVERSION=|^# CONFIG_LOCALVERSION_AUTO" out/.config || echo "no LOCALVERSION lines found"
+
+          echo ""
+          echo "=== Kernel version string ==="
+          cat out/include/generated/utsrelease.h 2>/dev/null || echo "utsrelease.h not found"
+
+          echo ""
+          echo "=== .scmversion content ==="
+          cat .scmversion 2>/dev/null || echo "no .scmversion found"
 
       - name: Upload raw kernel images
         uses: actions/upload-artifact@v4

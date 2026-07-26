@@ -12,7 +12,6 @@ undefined references to:
   susfs_is_current_ksu_domain  (namespace.c, fs/susfs.c)
   susfs_ksu_sid                (security/selinux/avc.c)
   susfs_priv_app_sid           (security/selinux/avc.c)
-  ksu_handle_devpts            (drivers/tty/pty.c)
 
 Usage:
   KSU_DIR=drivers/kernelsu python3 inject_susfs_safety.py
@@ -53,7 +52,7 @@ else:
 u32 susfs_ksu_sid __read_mostly = 0;
 u32 susfs_priv_app_sid __read_mostly = 0;
 
-static void susfs_set_sid(const char *secctx_name, u32 *out_sid)
+static inline void susfs_set_sid(const char *secctx_name, u32 *out_sid)
 {
 \tint err;
 
@@ -83,14 +82,7 @@ void susfs_set_priv_app_sid(void)
 
 bool susfs_is_current_ksu_domain(void)
 {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 18, 0)
-\tconst struct task_security_struct *tsec = selinux_cred(current_cred());
-#else
-\tconst struct cred_security_struct *tsec = selinux_cred(current_cred());
-#endif
-\tif (!tsec)
-\t\treturn false;
-\treturn tsec->sid == susfs_ksu_sid;
+\treturn unlikely(current_sid() == susfs_ksu_sid);
 }
 
 #endif /* CONFIG_KSU_SUSFS */
@@ -124,66 +116,25 @@ bool susfs_is_current_ksu_domain(void);
         append_file(path, decl_block)
         print(f"{path}: appended SUSFS declarations (fallback)")
 
-# ── 3. feature/sucompat.c — add ksu_handle_devpts ──────────────────────
-path = os.path.join(KSU, "feature", "sucompat.c")
-src = read_file(path)
-
-if "ksu_handle_devpts" in src:
-    print(f"{path}: ksu_handle_devpts already present - skipping")
-else:
-    devpts_code = """
-#ifdef CONFIG_KSU_SUSFS
-#include <linux/susfs_def.h>
-#include <linux/namei.h>
-#include "objsec.h"
-
-int ksu_handle_devpts(struct inode *inode)
-{
-\tuid_t uid;
-
-\tif (!current->mm)
-\t\treturn 0;
-
-\tuid = current_uid().val;
-\tif (uid % 100000 < 10000)
-\t\treturn 0;
-
-\tif (!ksu_is_allow_uid_for_current(uid))
-\t\treturn 0;
-
-\tif (ksu_file_sid) {
-\t\tstruct inode_security_struct *sec = selinux_inode(inode);
-\t\tif (sec) {
-\t\t\tsec->sid = ksu_file_sid;
-\t\t}
-\t}
-
-\treturn 0;
-}
-#endif /* CONFIG_KSU_SUSFS */
-"""
-    append_file(path, devpts_code)
-    print(f"{path}: appended ksu_handle_devpts")
-
-# ── 4. selinux/rules.c — add SID setup calls ──────────────────────────
+# ── 3. selinux/rules.c — add SID setup calls ──────────────────────────
 path = os.path.join(KSU, "selinux", "rules.c")
 src = read_file(path)
 
 if "susfs_set_ksu_sid" in src:
     print(f"{path}: SUSFS SID setup already present - skipping")
 else:
-    marker = "rcu_assign_pointer(selinux_state.policy, pol)"
+    marker = "\treset_avc_cache();"
     idx = src.find(marker)
     if idx >= 0:
-        sid_setup = """
-#ifdef CONFIG_KSU_SUSFS
+        eol = src.index("\n", idx) + 1
+        sid_setup = """\n#ifdef CONFIG_KSU_SUSFS
 \tsusfs_set_priv_app_sid();
 \tsusfs_set_ksu_sid();
 #endif
 """
-        new_src = src[:idx] + sid_setup + "\t" + src[idx:]
+        new_src = src[:eol] + sid_setup + src[eol:]
         write_file(path, new_src)
-        print(f"{path}: added SUSFS SID setup before policy commit")
+        print(f"{path}: added SUSFS SID setup after reset_avc_cache()")
     else:
         print(f"WARNING: marker not found in {path} - SID setup skipped")
 
