@@ -824,8 +824,9 @@ jobs:
 
       - name: Fix rejected SUSFS hunks manually
         working-directory: kernel
-        shell: python
+        shell: bash
         run: |
+          python3 << 'PYEOF'
           import os
 
           # --- fs/namespace.c: SUS_MOUNT hook ---
@@ -1035,6 +1036,7 @@ jobs:
                   print(f"{p}: susfs header already included ✓")
               else:
                   print(f"{p}: no SUSFS symbols found, skip include injection")
+          PYEOF
 
       - name: Generate defconfig
         working-directory: kernel
@@ -1082,8 +1084,9 @@ jobs:
 
       - name: Fix invalid CPU mask values
         working-directory: kernel
-        shell: python
+        shell: bash
         run: |
+          python3 << 'PYEOF'
           import os
           for p in ["out/.config", "/tmp/combined_defconfig"]:
               if os.path.exists(p):
@@ -1098,6 +1101,7 @@ jobs:
                   with open(p, "w", encoding="utf-8", errors="surrogateescape") as f:
                       f.write(s)
                   print(f"Fixed CPU masks in {p}")
+          PYEOF
 
       - name: Diagnostic — show resolved KSU config
         working-directory: kernel
