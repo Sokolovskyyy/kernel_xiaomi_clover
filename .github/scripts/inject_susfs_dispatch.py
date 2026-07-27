@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-Inject SUSFS ioctl dispatch + susfs_init() call into KernelSU-Next source tree.
+Inject SUSFS dispatch + susfs_init() call into KernelSU-Next source tree.
 
-Three changes (all idempotent):
-  1. dispatch.c  — add SUSFS command handler + range check in ksu_supercall_handle_ioctl()
-  2. init.c      — add susfs_init() call in kernelsu_init()
-  3. fs/Makefile — verify obj-$(CONFIG_KSU_SUSFS) += susfs.o exists
+Four changes (all idempotent):
+  1. dispatch.c    — add SUSFS command handler in ksu_supercall_handle_ioctl()
+  2. init.c        — add susfs_init() call in kernelsu_init()
+  3. fs/Makefile   — verify obj-$(CONFIG_KSU_SUSFS) += susfs.o exists
+  4. supercall.c   — add SUSFS_MAGIC dispatch in ksu_handle_sys_reboot()
 
 Run AFTER:
   - KernelSU-Next cloned (setup.sh)
@@ -234,5 +235,144 @@ if os.path.exists(makefile):
         print("  Expected: obj-$(CONFIG_KSU_SUSFS) += susfs.o")
 else:
     print(f"WARNING: {makefile} not found (not yet patched?)")
+
+# ═══════════════════════════════════════════════════════════════════
+# 4. supercall.c — SUSFS dispatch in ksu_handle_sys_reboot()
+# ═══════════════════════════════════════════════════════════════════
+supercall_path = find_file("supercall/supercall.c")
+if not supercall_path:
+    print("WARNING: supercall/supercall.c not found under", KSU)
+else:
+    src = read_file(supercall_path)
+
+    if "SUSFS_MAGIC_DISPATCH" in src:
+        print(f"{supercall_path}: SUSFS sys_reboot dispatch already present — skipping")
+    else:
+        modified = False
+
+        # ── 4a. Add #include <linux/susfs.h> after existing includes ──
+        if "#include <linux/susfs.h>" not in src:
+            marker_include = '#include "sulog/event.h"'
+            if marker_include in src:
+                src = src.replace(
+                    marker_include,
+                    marker_include + '\n#ifdef CONFIG_KSU_SUSFS\n#include <linux/susfs.h>\n#endif',
+                    1,
+                )
+                modified = True
+                print(f"{supercall_path}: added #include <linux/susfs.h> ✓")
+            else:
+                print(f"WARNING: include anchor not found in {supercall_path}")
+
+        # ── 4b. Insert SUSFS_MAGIC dispatch before final return 0 of ksu_handle_sys_reboot ──
+        # Anchor: the last "return 0;" + "}" of ksu_handle_sys_reboot,
+        # just before "#ifdef KSU_KPROBES_HOOK"
+        susfs_reboot_dispatch = r"""
+#ifdef CONFIG_KSU_SUSFS
+	/* SUSFS_MAGIC_DISPATCH: forward SUSFS commands from sys_reboot */
+	if (magic2 == SUSFS_MAGIC && current_uid().val == 0) {
+#ifdef CONFIG_KSU_SUSFS_SUS_PATH
+		if (cmd == CMD_SUSFS_ADD_SUS_PATH) {
+			susfs_add_sus_path(arg);
+			return 0;
+		}
+		if (cmd == CMD_SUSFS_ADD_SUS_PATH_LOOP) {
+			susfs_add_sus_path_loop(arg);
+			return 0;
+		}
+#endif
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+		if (cmd == CMD_SUSFS_HIDE_SUS_MNTS_FOR_NON_SU_PROCS) {
+			susfs_set_hide_sus_mnts_for_non_su_procs(arg);
+			return 0;
+		}
+#endif
+#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
+		if (cmd == CMD_SUSFS_ADD_SUS_KSTAT) {
+			susfs_add_sus_kstat(arg);
+			return 0;
+		}
+		if (cmd == CMD_SUSFS_UPDATE_SUS_KSTAT) {
+			susfs_update_sus_kstat(arg);
+			return 0;
+		}
+		if (cmd == CMD_SUSFS_ADD_SUS_KSTAT_STATICALLY) {
+			susfs_add_sus_kstat(arg);
+			return 0;
+		}
+#endif
+#ifdef CONFIG_KSU_SUSFS_TRY_UMOUNT
+		if (cmd == CMD_SUSFS_ADD_TRY_UMOUNT) {
+			susfs_add_try_umount(arg);
+			return 0;
+		}
+#endif
+#ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME
+		if (cmd == CMD_SUSFS_SET_UNAME) {
+			susfs_set_uname(arg);
+			return 0;
+		}
+#endif
+#ifdef CONFIG_KSU_SUSFS_ENABLE_LOG
+		if (cmd == CMD_SUSFS_ENABLE_LOG) {
+			susfs_enable_log(arg);
+			return 0;
+		}
+#endif
+#ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+		if (cmd == CMD_SUSFS_SET_CMDLINE_OR_BOOTCONFIG) {
+			susfs_set_cmdline_or_bootconfig(arg);
+			return 0;
+		}
+#endif
+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+		if (cmd == CMD_SUSFS_ADD_OPEN_REDIRECT) {
+			susfs_add_open_redirect(arg);
+			return 0;
+		}
+#endif
+#ifdef CONFIG_KSU_SUSFS_SUS_MAP
+		if (cmd == CMD_SUSFS_ADD_SUS_MAP) {
+			susfs_add_sus_map(arg);
+			return 0;
+		}
+#endif
+		if (cmd == CMD_SUSFS_ENABLE_AVC_LOG_SPOOFING) {
+			susfs_set_avc_log_spoofing(arg);
+			return 0;
+		}
+		if (cmd == CMD_SUSFS_SHOW_ENABLED_FEATURES) {
+			susfs_get_enabled_features(arg);
+			return 0;
+		}
+		if (cmd == CMD_SUSFS_SHOW_VARIANT) {
+			susfs_show_variant(arg);
+			return 0;
+		}
+		if (cmd == CMD_SUSFS_SHOW_VERSION) {
+			susfs_show_version(arg);
+			return 0;
+		}
+		return 0;
+	}
+#endif /* CONFIG_KSU_SUSFS */
+"""
+
+        # Anchor: last "return 0;\n}" in ksu_handle_sys_reboot, right before
+        # the "#ifdef KSU_KPROBES_HOOK" block
+        anchor_reboot = "\treturn 0;\n}\n\n#ifdef KSU_KPROBES_HOOK"
+        if anchor_reboot in src:
+            src = src.replace(
+                anchor_reboot,
+                susfs_reboot_dispatch + "\n" + anchor_reboot,
+                1,
+            )
+            modified = True
+            print(f"{supercall_path}: added SUSFS sys_reboot dispatch ✓")
+        else:
+            print(f"WARNING: reboot anchor not found in {supercall_path}")
+
+        if modified:
+            write_file(supercall_path, src)
 
 print("\n=== SUSFS dispatch injection complete ===")
