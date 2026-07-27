@@ -99,13 +99,13 @@ static int handle_susfs_ioctl(unsigned int cmd, void __user *argp)
 		susfs_show_version(&user_info);
 		return 0;
 	case CMD_SUSFS_SHOW_ENABLED_FEATURES:
-		susfs_show_enabled_features(&user_info);
+		susfs_get_enabled_features(&user_info);
 		return 0;
 	case CMD_SUSFS_SHOW_VARIANT:
 		susfs_show_variant(&user_info);
 		return 0;
 	case CMD_SUSFS_ENABLE_AVC_LOG_SPOOFING:
-		susfs_enable_avc_log_spoofing(&user_info);
+		susfs_set_avc_log_spoofing(&user_info);
 		return 0;
 	case CMD_SUSFS_ADD_SUS_MAP:
 		susfs_add_sus_map(&user_info);
