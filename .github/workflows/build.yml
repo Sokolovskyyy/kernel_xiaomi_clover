@@ -1048,7 +1048,8 @@ jobs:
             "CONFIG_COMPAT=y" \
             "CONFIG_PREEMPT=y" \
             "CONFIG_KSU=y" \
-            "CONFIG_KSU_MANUAL_HOOK=y" > /tmp/ksu_susfs.config
+            "CONFIG_KSU_MANUAL_HOOK=y" \
+            "CONFIG_KSU_DEBUG=y" > /tmp/ksu_susfs.config
 
           # Add custom local version if provided, otherwise keep default
           if [ -n "${{ inputs.kernel_localversion }}" ]; then
